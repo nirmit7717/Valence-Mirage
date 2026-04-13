@@ -62,4 +62,4 @@ TBD
 
 ---
 
-*Valence Mirage — Freedom is allowed. Probability decides its cost.*
+*Valence Mirage — Freedom is allowed but probability decides its cost.*
