@@ -1,0 +1,291 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Valence Mirage — Playtest</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: 'Segoe UI', system-ui, sans-serif; background: #0a0a0f; color: #e0d8c8; min-height: 100vh; }
+  .container { display: grid; grid-template-columns: 1fr 280px; grid-template-rows: auto 1fr auto; height: 100vh; gap: 0; }
+  .header { grid-column: 1 / -1; background: linear-gradient(135deg, #1a1a2e, #16213e); padding: 12px 24px; border-bottom: 1px solid #2a2a4a; display: flex; align-items: center; justify-content: space-between; }
+  .header h1 { font-size: 18px; color: #c9a84c; font-weight: 600; }
+  .header span { font-size: 12px; color: #666; }
+  .chat-area { grid-column: 1; overflow-y: auto; padding: 20px 24px; display: flex; flex-direction: column; gap: 16px; }
+  .msg { max-width: 85%; padding: 12px 16px; border-radius: 8px; font-size: 14px; line-height: 1.6; white-space: pre-wrap; }
+  .msg.system { align-self: flex-start; background: #1a1a2e; border: 1px solid #2a2a4a; color: #c0b898; }
+  .msg.player { align-self: flex-end; background: #1e2a1e; border: 1px solid #2a4a2a; color: #a8d8a8; }
+  .msg .meta { font-size: 11px; color: #666; margin-top: 6px; font-family: monospace; }
+  .msg .dice-badge { display: inline-block; background: #2a2a4a; padding: 2px 8px; border-radius: 4px; font-size: 11px; margin-right: 4px; }
+  .dice-badge.success { background: #1a3a1a; color: #6f6; }
+  .dice-badge.partial { background: #3a3a1a; color: #ee6; }
+  .dice-badge.failure { background: #3a1a1a; color: #f66; }
+  .dice-badge.crit-success { background: #1a4a2a; color: #4f4; font-weight: bold; }
+  .dice-badge.crit-failure { background: #4a1a1a; color: #f44; font-weight: bold; }
+  .dice-badge.choice { background: #2a2a3a; color: #99f; }
+  .msg .beat-tag { display: inline-block; background: #2a1a3a; color: #c8a; padding: 2px 8px; border-radius: 4px; font-size: 11px; margin-left: 4px; }
+  .choices-box { margin-top: 8px; display: flex; flex-direction: column; gap: 4px; }
+  .choice-btn { background: #1a1a3e; border: 1px solid #3a3a6a; border-radius: 4px; padding: 6px 12px; color: #aac; font-size: 13px; cursor: pointer; text-align: left; }
+  .choice-btn:hover { background: #2a2a4e; border-color: #c9a84c; color: #e0d8c8; }
+  .sidebar { grid-column: 2; grid-row: 2 / 4; background: #0f0f18; border-left: 1px solid #2a2a4a; padding: 16px; overflow-y: auto; font-size: 13px; }
+  .sidebar h3 { color: #c9a84c; font-size: 12px; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 10px; margin-top: 16px; }
+  .sidebar h3:first-child { margin-top: 0; }
+  .stat-row { display: flex; justify-content: space-between; margin-bottom: 4px; }
+  .stat-label { color: #888; }
+  .stat-val { color: #ddd; font-family: monospace; }
+  .hp-bar, .mana-bar { height: 6px; border-radius: 3px; background: #1a1a2a; margin-top: 4px; margin-bottom: 8px; overflow: hidden; }
+  .hp-bar .fill { background: #c44; height: 100%; border-radius: 3px; transition: width 0.5s; }
+  .mana-bar .fill { background: #44c; height: 100%; border-radius: 3px; transition: width 0.5s; }
+  .score-box { background: #111; border: 1px solid #2a2a4a; border-radius: 6px; padding: 10px; margin-bottom: 8px; font-family: monospace; font-size: 11px; }
+  .score-box .label { color: #888; }
+  .score-box .value { color: #c9a84c; float: right; }
+  .input-area { grid-column: 1; background: #0f0f18; border-top: 1px solid #2a2a4a; padding: 16px 24px; display: flex; gap: 10px; }
+  .input-area input { flex: 1; background: #1a1a2e; border: 1px solid #2a2a4a; border-radius: 6px; padding: 10px 16px; color: #e0d8c8; font-size: 14px; outline: none; }
+  .input-area input:focus { border-color: #c9a84c; }
+  .char-count { color: #555; font-size: 11px; align-self: center; min-width: 40px; text-align: right; }
+  .char-count.warn { color: #c84; }
+  .char-count.over { color: #c44; }
+  .input-area button { background: linear-gradient(135deg, #c9a84c, #a08030); border: none; border-radius: 6px; padding: 10px 20px; color: #0a0a0f; font-weight: 600; cursor: pointer; font-size: 14px; }
+  .input-area button:hover { opacity: 0.9; }
+  .input-area button:disabled { opacity: 0.4; cursor: not-allowed; }
+  .connect-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.85); display: flex; align-items: center; justify-content: center; z-index: 100; }
+  .connect-box { background: #1a1a2e; border: 1px solid #2a2a4a; border-radius: 12px; padding: 32px; text-align: center; max-width: 360px; }
+  .connect-box h2 { color: #c9a84c; margin-bottom: 16px; }
+  .connect-box input { width: 100%; background: #0a0a0f; border: 1px solid #2a2a4a; border-radius: 6px; padding: 10px; color: #e0d8c8; font-size: 14px; margin-bottom: 12px; outline: none; text-align: center; }
+  .connect-box input:focus { border-color: #c9a84c; }
+  .connect-box button { background: linear-gradient(135deg, #c9a84c, #a08030); border: none; border-radius: 6px; padding: 10px 24px; color: #0a0a0f; font-weight: 600; cursor: pointer; font-size: 14px; width: 100%; }
+  ::-webkit-scrollbar { width: 6px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: #2a2a4a; border-radius: 3px; }
+</style>
+</head>
+<body>
+
+<div class="connect-overlay" id="connectOverlay">
+  <div class="connect-box">
+    <h2>🎲 Valence Mirage</h2>
+    <p style="color:#888;margin-bottom:16px;font-size:13px;">Enter your character's name to begin</p>
+    <input type="text" id="playerNameInput" placeholder="Character name..." maxlength="50" value="Adventurer">
+    <button onclick="startSession()">Enter the World</button>
+  </div>
+</div>
+
+<div class="container" id="gameContainer" style="display:none">
+  <div class="header">
+    <h1>🎲 Valence Mirage</h1>
+    <span id="sessionInfo">Turn 0</span>
+  </div>
+
+  <div class="chat-area" id="chatArea">
+    <div class="msg system" id="welcomeMsg">Preparing your adventure...</div>
+  </div>
+
+  <div class="input-area">
+    <input type="text" id="actionInput" placeholder="What do you do?" autocomplete="off" maxlength="200">
+    <span class="char-count" id="charCount">0/200</span>
+    <button id="submitBtn" onclick="submitAction()">Act</button>
+  </div>
+
+  <div class="sidebar">
+    <h3>Character</h3>
+    <div class="stat-row"><span class="stat-label">Name</span><span class="stat-val" id="sName">—</span></div>
+    <div class="stat-row"><span class="stat-label">Level</span><span class="stat-val" id="sLevel">1</span></div>
+
+    <h3>HP</h3>
+    <div class="stat-row"><span class="stat-val" id="sHp">50 / 50</span></div>
+    <div class="hp-bar"><div class="fill" id="hpFill" style="width:100%"></div></div>
+
+    <h3>Mana</h3>
+    <div class="stat-row"><span class="stat-val" id="sMana">50 / 50</span></div>
+    <div class="mana-bar"><div class="fill" id="manaFill" style="width:100%"></div></div>
+
+    <h3>Stats</h3>
+    <div class="stat-row"><span class="stat-label">STR</span><span class="stat-val" id="sStr">10</span></div>
+    <div class="stat-row"><span class="stat-label">INT</span><span class="stat-val" id="sInt">10</span></div>
+    <div class="stat-row"><span class="stat-label">DEX</span><span class="stat-val" id="sDex">10</span></div>
+    <div class="stat-row"><span class="stat-label">CON</span><span class="stat-val" id="sCon">10</span></div>
+    <div class="stat-row"><span class="stat-label">CHA</span><span class="stat-val" id="sCha">10</span></div>
+    <div class="stat-row"><span class="stat-label">WIS</span><span class="stat-val" id="sWis">10</span></div>
+
+    <h3>Last Action</h3>
+    <div class="score-box" id="lastRoll" style="display:none">
+      <div><span class="label">Type</span><span class="value" id="sType">—</span></div>
+      <div id="probRow"><span class="label">Probability</span><span class="value" id="sProb">—</span></div>
+      <div id="threshRow"><span class="label">Threshold</span><span class="value" id="sThresh">—</span></div>
+      <div id="rollRow"><span class="label">Roll</span><span class="value" id="sRoll">—</span></div>
+      <div><span class="label">Result</span><span class="value" id="sResult">—</span></div>
+    </div>
+
+    <h3>Story Beat</h3>
+    <div id="sBeat" style="color:#c8a;font-size:12px;">—</div>
+
+    <h3>Effects</h3>
+    <div id="sEffects" style="color:#888;font-size:12px;">None</div>
+  </div>
+</div>
+
+<script>
+const API = window.location.origin;
+let sessionId = null;
+let busy = false;
+const MAX_CHARS = 200;
+
+// Character counter
+document.getElementById('actionInput').addEventListener('input', function() {
+  const len = this.value.length;
+  const el = document.getElementById('charCount');
+  el.textContent = `${len}/${MAX_CHARS}`;
+  el.className = 'char-count' + (len > MAX_CHARS ? ' over' : len > MAX_CHARS * 0.8 ? ' warn' : '');
+});
+
+async function startSession() {
+  const name = document.getElementById('playerNameInput').value.trim() || 'Adventurer';
+  try {
+    const res = await fetch(API + '/session/new', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({player_name: name}),
+    });
+    const data = await res.json();
+    sessionId = data.session_id;
+    document.getElementById('sName').textContent = name;
+    document.getElementById('sessionInfo').textContent = `Turn 0 | ${data.campaign.title}`;
+
+    // Show campaign info
+    const campaignMsg = `<strong>📜 ${data.campaign.title}</strong>\n\n${data.campaign.premise}\n\n<em>Setting: ${data.campaign.setting}</em>`;
+    addMsg('system', campaignMsg);
+
+    // Remove the placeholder welcome
+    const welcome = document.getElementById('welcomeMsg');
+    if (welcome) welcome.remove();
+
+    document.getElementById('connectOverlay').style.display = 'none';
+    document.getElementById('gameContainer').style.display = 'grid';
+    document.getElementById('actionInput').focus();
+  } catch(e) {
+    alert('Failed to connect to server. Is it running?');
+  }
+}
+
+async function submitAction(actionText) {
+  const input = document.getElementById('actionInput');
+  const text = actionText || input.value.trim();
+  if (!text || busy) return;
+
+  busy = true;
+  input.value = '';
+  document.getElementById('charCount').textContent = '0/200';
+  document.getElementById('submitBtn').disabled = true;
+
+  addMsg('player', text);
+  const loadingId = addMsg('system', '⟳ Resolving your fate...');
+
+  try {
+    const res = await fetch(API + '/session/' + sessionId + '/action', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({action: text}),
+    });
+    const data = await res.json();
+    document.getElementById(loadingId).remove();
+
+    // Build narration with meta
+    let metaHtml = '<div class="meta">';
+
+    if (data.requires_roll) {
+      const badgeClass = data.outcome.includes('critical') ?
+        (data.outcome.includes('success') ? 'crit-success' : 'crit-failure') :
+        (data.outcome === 'success' ? 'success' : data.outcome === 'partial_success' ? 'partial' : 'failure');
+      const outcomeLabel = data.outcome.replace(/_/g, ' ').toUpperCase();
+      metaHtml += `<span class="dice-badge ${badgeClass}">🎲 ${data.roll} vs ${data.dice_threshold}+</span>`;
+      metaHtml += `<span class="dice-badge ${badgeClass}">${outcomeLabel}</span>`;
+      if (data.probability) {
+        metaHtml += `<span class="dice-badge">P: ${(data.probability * 100).toFixed(1)}%</span>`;
+      }
+    } else {
+      metaHtml += `<span class="dice-badge choice">📖 Narrative Choice</span>`;
+    }
+
+    if (data.current_beat) {
+      metaHtml += `<span class="beat-tag">📍 ${data.current_beat}</span>`;
+    }
+    metaHtml += '</div>';
+
+    let content = data.narration + metaHtml;
+
+    // If choices are presented
+    if (data.choices && data.choices.length > 0) {
+      content += '<div class="choices-box">';
+      data.choices.forEach(c => {
+        content += `<button class="choice-btn" onclick="submitAction('${c.replace(/'/g, "\\'")}')">${c}</button>`;
+      });
+      content += '</div>';
+    }
+
+    addMsg('system', content);
+    updateSidebar(data);
+    document.getElementById('sessionInfo').textContent = `Turn ${data.turn_number}`;
+
+  } catch(e) {
+    document.getElementById(loadingId).remove();
+    addMsg('system', '⚠ Something went wrong: ' + e.message);
+  }
+
+  busy = false;
+  document.getElementById('submitBtn').disabled = false;
+  document.getElementById('actionInput').focus();
+}
+
+function addMsg(type, content) {
+  const area = document.getElementById('chatArea');
+  const div = document.createElement('div');
+  div.className = 'msg ' + type;
+  div.innerHTML = content;
+  const id = 'msg-' + Date.now() + Math.random();
+  div.id = id;
+  area.appendChild(div);
+  area.scrollTop = area.scrollHeight;
+  return id;
+}
+
+function updateSidebar(data) {
+  document.getElementById('sHp').textContent = `${data.player_hp} / 50`;
+  document.getElementById('hpFill').style.width = `${(data.player_hp / 50) * 100}%`;
+  document.getElementById('sMana').textContent = `${data.player_mana} / 50`;
+  document.getElementById('manaFill').style.width = `${(data.player_mana / 50) * 100}%`;
+
+  document.getElementById('lastRoll').style.display = 'block';
+
+  if (data.requires_roll) {
+    document.getElementById('sType').textContent = '🎲 Rolled';
+    document.getElementById('probRow').style.display = '';
+    document.getElementById('threshRow').style.display = '';
+    document.getElementById('rollRow').style.display = '';
+    document.getElementById('sProb').textContent = data.probability ? (data.probability * 100).toFixed(1) + '%' : '—';
+    document.getElementById('sThresh').textContent = data.dice_threshold + '+';
+    document.getElementById('sRoll').textContent = data.roll;
+  } else {
+    document.getElementById('sType').textContent = '📖 Choice';
+    document.getElementById('probRow').style.display = 'none';
+    document.getElementById('threshRow').style.display = 'none';
+    document.getElementById('rollRow').style.display = 'none';
+  }
+  document.getElementById('sResult').textContent = data.outcome.replace(/_/g, ' ');
+
+  if (data.current_beat) {
+    document.getElementById('sBeat').textContent = data.current_beat;
+  }
+}
+
+document.addEventListener('keydown', e => {
+  if (e.key === 'Enter') {
+    if (document.getElementById('connectOverlay').style.display !== 'none') {
+      startSession();
+    } else {
+      submitAction();
+    }
+  }
+});
+</script>
+</body>
+</html>

@@ -1,3 +1,21 @@
-# Internal reference docs
-*.md
-!README.md
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+venv/
+*.db
+
+# Environment
+.env
+.env.local
+
+# Internal reference docs (not for public repo)
+RESEARCH.md
+MVP.md
+Probabilistic*
+IMPLEMENTATION_DESIGN.md
+PROGRESS.md
+
+# OS
+.DS_Store
+Thumbs.db
