@@ -1,4 +1,4 @@
-"""Narrator — Generates narrative text based on action outcomes."""
+"""Narrator — AI-driven narrative generation with rule grounding."""
 
 import logging
 from pathlib import Path
@@ -7,6 +7,8 @@ from openai import AsyncOpenAI
 
 from models.action import ActionIntent
 from models.game_state import PlayerState
+from engines.campaign_planner import CampaignPlanner, CampaignBlueprint
+from rag import RuleRetriever
 import config
 
 logger = logging.getLogger(__name__)
@@ -15,12 +17,15 @@ PROMPT_PATH = Path(__file__).parent.parent / "prompts" / "narrator.txt"
 
 
 class Narrator:
+    """Generates narrative descriptions of action outcomes."""
+
     def __init__(self):
         self.client = AsyncOpenAI(
             base_url=config.NVIDIA_BASE_URL,
             api_key=config.NVIDIA_API_KEY,
         )
-        self.system_prompt = PROMPT_PATH.read_text()
+        self.prompt = PROMPT_PATH.read_text()
+        self.rule_retriever = RuleRetriever()
 
     async def narrate(
         self,
@@ -31,42 +36,43 @@ class Narrator:
         player: PlayerState,
         world_state: dict,
     ) -> str:
-        user_message = (
-            f"Player: {player.name}\n"
-            f"Current situation: {world_state.get('situation', 'Unknown')}\n"
-            f"Location: {world_state.get('location', 'Unknown')}\n"
-            f"Player action: {intent.description}\n"
-            f"Action type: {intent.action_type} (scale: {intent.scale}, risk: {intent.risk})\n"
-            f"Outcome: {outcome_result}\n"
-            f"Roll: {roll} (needed {threshold}+)\n"
-            f"Player HP: {player.hp}/{player.max_hp}, Mana: {player.mana}/{player.max_mana}\n"
+        # Fetch relevant rules for grounding
+        relevant_rules = self.rule_retriever.get_relevant_rules(
+            intent.action_type, intent.description
         )
 
-        if intent.target:
-            user_message += f"Target: {intent.target}\n"
+        # Truncate rules to avoid token bloat (max ~600 chars)
+        rules_context = relevant_rules[:600] if relevant_rules else ""
+
+        user_msg = (
+            f"Action: {intent.description}\n"
+            f"Type: {intent.action_type}\n"
+            f"Outcome: {outcome_result}\n"
+            f"Dice: rolled {roll} vs threshold {threshold}\n"
+            f"Player: {player.name} (HP {player.hp}/{player.max_hp}, "
+            f"Mana {player.mana}/{player.max_mana}, "
+            f"Level {player.level})\n"
+            f"Location: {world_state.get('location', 'unknown')}\n"
+            f"Situation: {world_state.get('situation', '')[-300:]}\n"
+        )
+
+        if rules_context:
+            user_msg += f"\nRelevant Rules:\n{rules_context}\n"
 
         try:
             response = await self.client.chat.completions.create(
                 model=config.NARRATOR_MODEL,
                 messages=[
-                    {"role": "system", "content": self.system_prompt},
-                    {"role": "user", "content": user_message},
+                    {"role": "system", "content": self.prompt},
+                    {"role": "user", "content": user_msg},
                 ],
-                temperature=0.8,
-                max_tokens=500,
+                temperature=0.85,
+                max_tokens=400,
             )
-
             narration = response.choices[0].message.content.strip()
-            logger.info(f"Narration generated: {len(narration)} chars")
+            logger.debug(f"Narration: {narration[:100]}...")
             return narration
 
         except Exception as e:
-            logger.error(f"Narration generation failed: {e}")
-            fallback_map = {
-                "critical_success": f"Against all odds, your {intent.action_type} succeeds brilliantly!",
-                "success": f"Your {intent.action_type} works as intended.",
-                "partial_success": f"Your {intent.action_type} partially succeeds, but with a cost.",
-                "failure": f"Your {intent.action_type} fails. Things don't go as planned.",
-                "critical_failure": f"Your {intent.action_type} goes catastrophically wrong!",
-            }
-            return fallback_map.get(outcome_result, "Something happens...")
+            logger.error(f"Narration API error: {e}")
+            return f"Your {intent.action_type} results in {outcome_result}. The world shifts around you."

@@ -4,37 +4,55 @@ import logging
 from datetime import datetime
 from copy import deepcopy
 
-from models.game_state import GameSession, PlayerState, Turn
+from models.game_state import GameSession, PlayerState, Turn, Item
 from models.outcome import StateChanges
 from models.action import ActionIntent
 import config
 
 logger = logging.getLogger(__name__)
 
+# XP rewards by outcome
+XP_REWARDS = {
+    "critical_success": 30,
+    "success": 20,
+    "partial_success": 15,
+    "failure": 10,
+    "critical_failure": 5,
+    "narrative_choice": 5,
+}
+
+# Starting inventory items
+STARTER_ITEMS = [
+    Item(name="Rusty Sword", description="A worn but serviceable blade.", item_type="weapon",
+         stat_bonus={"strength": 1}, usable=False),
+    Item(name="Health Potion", description="Restores 15 HP when consumed.", item_type="consumable",
+         hp_restore=15, usable=True, consumes_on_use=True),
+    Item(name="Mana Potion", description="Restores 15 mana when consumed.", item_type="consumable",
+         mana_restore=15, usable=True, consumes_on_use=True),
+]
+
 
 class StateManager:
-    """Creates, stores, and updates game sessions. Phase 1: in-memory."""
+    """Creates, stores, and updates game sessions."""
 
     def __init__(self):
         self._sessions: dict[str, GameSession] = {}
 
     def create_session(self, player_name: str = "Adventurer") -> GameSession:
-        """Create a new game session with default starting state."""
-        session = GameSession(
-            player=PlayerState(
-                name=player_name,
-                hp=config.DEFAULT_HP,
-                max_hp=config.DEFAULT_HP,
-                mana=config.DEFAULT_MANA,
-                max_mana=config.DEFAULT_MANA,
-            ),
+        player = PlayerState(
+            name=player_name,
+            hp=config.DEFAULT_HP,
+            max_hp=config.DEFAULT_HP,
+            mana=config.DEFAULT_MANA,
+            max_mana=config.DEFAULT_MANA,
+            inventory=deepcopy(STARTER_ITEMS),
         )
+        session = GameSession(player=player)
         self._sessions[session.session_id] = session
         logger.info(f"Session created: {session.session_id} for '{player_name}'")
         return session
 
     def get_session(self, session_id: str) -> GameSession | None:
-        """Retrieve a session by ID."""
         return self._sessions.get(session_id)
 
     def apply_changes(
@@ -42,70 +60,87 @@ class StateManager:
         session: GameSession,
         intent: ActionIntent,
         state_changes: StateChanges,
-    ) -> None:
+        outcome: str = "success",
+    ) -> dict:
         """Apply state changes after an action is resolved.
 
-        Updates player state in-place within the session.
+        Returns dict with level_up info if applicable.
         """
         player = session.player
+        level_up_info = {}
 
-        # HP changes
+        # --- HP changes ---
         player.hp = max(0, min(player.max_hp, player.hp + state_changes.hp_delta))
 
-        # Mana changes
+        # --- Mana changes ---
         player.mana = max(0, min(player.max_mana, player.mana + state_changes.mana_delta))
 
         # Consume mana if action uses resource
         if intent.uses_resource and intent.resource_cost > 0:
             player.mana = max(0, player.mana - intent.resource_cost)
 
-        # Items used
+        # --- Items used ---
         for item_name in state_changes.items_used:
             player.inventory = [
                 i for i in player.inventory
                 if not (i.name.lower() == item_name.lower() and i.consumes_on_use)
             ]
 
-        # Items gained
-        # (Phase 2: actual Item objects. Phase 1: just track names)
+        # --- Items gained ---
         for item_name in state_changes.items_gained:
-            from models.game_state import Item
             player.inventory.append(
-                Item(name=item_name, description="A mysterious item.")
+                Item(name=item_name, description="A mysterious item.", item_type="misc")
             )
 
-        # Stat changes
+        # --- Stat changes ---
         for stat, delta in state_changes.stat_changes.items():
             if hasattr(player.stats, stat):
                 current = getattr(player.stats, stat)
                 setattr(player.stats, stat, max(1, current + delta))
 
-        # Status effects
+        # --- Status effects ---
         for effect in state_changes.status_effects_added:
             if effect not in player.status_effects:
                 player.status_effects.append(effect)
-
         for effect in state_changes.status_effects_removed:
             if effect in player.status_effects:
                 player.status_effects.remove(effect)
 
-        # Track action history for saturation/novelty
+        # --- Passive regen (small recovery each turn) ---
+        if outcome not in ("critical_failure",):
+            player.mana = min(player.max_mana, player.mana + 1)  # +1 mana per turn
+            player.hp = min(player.max_hp, player.hp + 1)        # +1 HP per turn
+
+        # --- XP gain ---
+        xp_gain = XP_REWARDS.get(outcome, 10)
+        leveled = player.gain_xp(xp_gain)
+        if leveled:
+            level_up_info = {
+                "new_level": player.level,
+                "max_hp": player.max_hp,
+                "max_mana": player.max_mana,
+                "stat_increased": "a core attribute",
+            }
+            logger.info(f"LEVEL UP! {player.name} is now level {player.level}")
+
+        # --- Action history ---
         player.action_history.append(intent.action_type)
-        # Keep only last 20 action types to prevent unbounded growth
         if len(player.action_history) > 20:
             player.action_history = player.action_history[-20:]
 
         logger.info(
             f"State updated: HP={player.hp}/{player.max_hp}, "
-            f"Mana={player.mana}/{player.max_mana}"
+            f"Mana={player.mana}/{player.max_mana}, "
+            f"XP={player.xp}/{player.xp_to_next}, "
+            f"Level={player.level}"
         )
 
+        return level_up_info
+
     def list_sessions(self) -> list[str]:
-        """List all session IDs."""
         return list(self._sessions.keys())
 
     def delete_session(self, session_id: str) -> bool:
-        """Delete a session."""
         if session_id in self._sessions:
             del self._sessions[session_id]
             logger.info(f"Session deleted: {session_id}")

@@ -2,6 +2,7 @@
 
 import json
 import logging
+import re
 from pathlib import Path
 
 from openai import AsyncOpenAI
@@ -15,17 +16,15 @@ PROMPT_PATH = Path(__file__).parent.parent / "prompts" / "campaign_plan.txt"
 
 
 class StoryBeat(BaseModel):
-    """A single plot point in the campaign."""
     beat_id: int
     title: str
     description: str = ""
-    type: str = "exploration"  # exploration, combat, social, choice, revelation, climax
+    type: str = "exploration"
     key_npcs: list[str] = []
-    probability_modifier: float = 0.0  # Bonus/penalty for actions aligned with this beat
+    probability_modifier: float = 0.0
 
 
 class CampaignAct(BaseModel):
-    """An act containing multiple story beats."""
     act_id: int
     title: str
     description: str = ""
@@ -33,7 +32,6 @@ class CampaignAct(BaseModel):
 
 
 class CampaignBlueprint(BaseModel):
-    """The full planned narrative arc for a campaign session."""
     title: str
     premise: str
     setting: str
@@ -46,7 +44,6 @@ class CampaignBlueprint(BaseModel):
 
 
 class CampaignPlanner:
-    """Generates and manages campaign narrative arcs."""
 
     def __init__(self):
         self.client = AsyncOpenAI(
@@ -55,36 +52,95 @@ class CampaignPlanner:
         )
         self.prompt = PROMPT_PATH.read_text()
 
-    async def generate_blueprint(self, player_name: str = "Adventurer") -> CampaignBlueprint:
-        """Generate a campaign blueprint with narrative arc."""
-        user_msg = (
-            f"Player character: {player_name}\n"
-            f"Generate a complete campaign blueprint for a single-session dark fantasy adventure."
-        )
+    async def generate_blueprint(self, player_name: str = "Adventurer", keywords: str = "") -> CampaignBlueprint:
+        if keywords.strip():
+            user_msg = (
+                f"Player character: {player_name}\n"
+                f"Player wants this kind of adventure: {keywords.strip()}\n"
+                f"Generate a matching campaign blueprint."
+            )
+        else:
+            user_msg = (
+                f"Player character: {player_name}\n"
+                f"Generate a complete campaign blueprint for a single-session dark fantasy adventure."
+            )
 
         try:
             response = await self.client.chat.completions.create(
-                model=config.INTENT_MODEL,  # Use fast model for planning
+                model=config.INTENT_MODEL,
                 messages=[
                     {"role": "system", "content": self.prompt},
                     {"role": "user", "content": user_msg},
                 ],
                 temperature=0.7,
-                max_tokens=800,
+                max_tokens=1500,
             )
 
             raw = response.choices[0].message.content.strip()
             logger.info(f"Campaign blueprint raw: {raw[:200]}...")
 
-            data = json.loads(raw)
-            return CampaignBlueprint(**data)
+            data = self._parse_json_robust(raw)
+            if data:
+                return CampaignBlueprint(**data)
+            else:
+                logger.warning("Could not parse campaign JSON, using fallback")
+                return self._fallback_blueprint(player_name)
 
         except Exception as e:
-            logger.warning(f"Campaign blueprint generation failed, using fallback: {e}")
+            logger.warning(f"Campaign blueprint generation failed: {e}")
             return self._fallback_blueprint(player_name)
 
+    def _parse_json_robust(self, raw: str) -> dict | None:
+        """Try multiple strategies to parse potentially truncated JSON."""
+        # Strategy 1: Direct parse
+        try:
+            return json.loads(raw)
+        except json.JSONDecodeError:
+            pass
+
+        # Strategy 2: Extract JSON from markdown code blocks
+        json_match = re.search(r'```(?:json)?\s*([\s\S]*?)```', raw)
+        if json_match:
+            try:
+                return json.loads(json_match.group(1))
+            except json.JSONDecodeError:
+                pass
+
+        # Strategy 3: Find the first { and last } and try
+        start = raw.find('{')
+        end = raw.rfind('}')
+        if start != -1 and end > start:
+            try:
+                return json.loads(raw[start:end+1])
+            except json.JSONDecodeError:
+                pass
+
+        # Strategy 4: Repair truncated JSON by closing open brackets
+        substring = raw[start:end+1] if start != -1 else raw
+        open_braces = substring.count('{') - substring.count('}')
+        open_brackets = substring.count('[') - substring.count(']')
+        repaired = substring + (']' * max(0, open_brackets)) + ('}' * max(0, open_braces))
+        try:
+            return json.loads(repaired)
+        except json.JSONDecodeError:
+            pass
+
+        # Strategy 5: Strip any trailing incomplete content after last complete value
+        last_complete = max(substring.rfind('"],'), substring.rfind('"},'), substring.rfind('"],'))
+        if last_complete > 0:
+            truncated = substring[:last_complete+1]
+            t_braces = truncated.count('{') - truncated.count('}')
+            t_brackets = truncated.count('[') - truncated.count(']')
+            truncated += (']' * max(0, t_brackets)) + ('}' * max(0, t_braces))
+            try:
+                return json.loads(truncated)
+            except json.JSONDecodeError:
+                pass
+
+        logger.error(f"All JSON parse strategies failed for: {raw[:100]}...")
+        return None
+
     def get_current_beat(self, blueprint: CampaignBlueprint) -> StoryBeat | None:
-        """Get the current story beat the player should be in."""
         for act in blueprint.acts:
             if act.act_id == blueprint.current_act:
                 for beat in act.beats:
@@ -93,7 +149,6 @@ class CampaignPlanner:
         return None
 
     def advance_beat(self, blueprint: CampaignBlueprint) -> CampaignBlueprint:
-        """Move to the next story beat."""
         current_act = None
         for act in blueprint.acts:
             if act.act_id == blueprint.current_act:
@@ -104,31 +159,21 @@ class CampaignPlanner:
             return blueprint
 
         beat_ids = [b.beat_id for b in current_act.beats]
-        if blueprint.current_beat < max(beat_ids):
+        if beat_ids and blueprint.current_beat < max(beat_ids):
             blueprint.current_beat += 1
         else:
-            # Advance to next act
             act_ids = [a.act_id for a in blueprint.acts]
-            if blueprint.current_act < max(act_ids):
+            if act_ids and blueprint.current_act < max(act_ids):
                 blueprint.current_act += 1
                 blueprint.current_beat = 1
 
         return blueprint
 
     def get_narrative_relevance_bonus(self, blueprint: CampaignBlueprint, action_description: str) -> float:
-        """Calculate how relevant an action is to the current story beat.
-        
-        Returns a bonus/penalty to probability.
-        Actions aligned with the current beat get +0.1 to +0.2
-        Actions tangential get 0.0
-        Actions that derail the story get -0.1 to -0.2
-        """
         beat = self.get_current_beat(blueprint)
         if not beat:
             return 0.0
 
-        # Simple keyword overlap check
-        # Phase 3: Replace with embedding-based similarity
         beat_words = set(beat.title.lower().split() + beat.description.lower().split())
         action_words = set(action_description.lower().split())
         overlap = len(beat_words & action_words)
@@ -141,7 +186,6 @@ class CampaignPlanner:
 
     @staticmethod
     def _fallback_blueprint(player_name: str) -> CampaignBlueprint:
-        """Pre-defined blueprint if AI generation fails."""
         return CampaignBlueprint(
             title="The Dark Tower",
             premise="A mysterious tower has appeared in the northern mountains. "
@@ -150,56 +194,34 @@ class CampaignPlanner:
             tone="dark fantasy",
             acts=[
                 CampaignAct(
-                    act_id=1,
-                    title="The Tavern",
+                    act_id=1, title="The Tavern",
                     description="Gather information and meet potential allies",
                     beats=[
-                        StoryBeat(beat_id=1, title="The Barkeep's Warning",
-                                 description="Learn about the dark tower from the barkeep",
-                                 type="social", key_npcs=["barkeep"]),
-                        StoryBeat(beat_id=2, title="The Hooded Stranger",
-                                 description="A mysterious figure offers information",
-                                 type="social", key_npcs=["hooded stranger"]),
-                        StoryBeat(beat_id=3, title="The Decision",
-                                 description="Choose how to proceed: alone or with allies",
-                                 type="choice"),
+                        StoryBeat(beat_id=1, title="The Barkeep's Warning", description="Learn about the dark tower from the barkeep", type="social", key_npcs=["barkeep"]),
+                        StoryBeat(beat_id=2, title="The Hooded Stranger", description="A mysterious figure offers information", type="social", key_npcs=["hooded stranger"]),
+                        StoryBeat(beat_id=3, title="The Decision", description="Choose how to proceed", type="choice"),
                     ],
                 ),
                 CampaignAct(
-                    act_id=2,
-                    title="The Road North",
-                    description="Journey toward the tower, facing dangers along the way",
+                    act_id=2, title="The Road North",
+                    description="Journey toward the tower",
                     beats=[
-                        StoryBeat(beat_id=1, title="Ambush on the Road",
-                                 description="Bandits or creatures attack on the road",
-                                 type="combat"),
-                        StoryBeat(beat_id=2, title="The Abandoned Village",
-                                 description="Discover what happened to the nearby village",
-                                 type="exploration"),
-                        StoryBeat(beat_id=3, title="The Tower's Shadow",
-                                 description="First sight of the tower, choose approach",
-                                 type="choice"),
+                        StoryBeat(beat_id=1, title="Ambush on the Road", description="Bandits or creatures attack", type="combat"),
+                        StoryBeat(beat_id=2, title="The Abandoned Village", description="Discover what happened nearby", type="exploration"),
+                        StoryBeat(beat_id=3, title="The Tower's Shadow", description="First sight of the tower", type="choice"),
                     ],
                 ),
                 CampaignAct(
-                    act_id=3,
-                    title="The Tower",
+                    act_id=3, title="The Tower",
                     description="Enter the tower and face its master",
                     beats=[
-                        StoryBeat(beat_id=1, title="The Tower's Defenses",
-                                 description="Navigate the tower's magical defenses",
-                                 type="combat"),
-                        StoryBeat(beat_id=2, title="The Truth",
-                                 description="Discover the true nature of the tower",
-                                 type="revelation"),
-                        StoryBeat(beat_id=3, title="The Final Confrontation",
-                                 description="Face the tower's master",
-                                 type="climax"),
+                        StoryBeat(beat_id=1, title="The Tower's Defenses", description="Navigate magical defenses", type="combat"),
+                        StoryBeat(beat_id=2, title="The Truth", description="Discover the tower's true nature", type="revelation"),
+                        StoryBeat(beat_id=3, title="The Final Confrontation", description="Face the tower's master", type="climax"),
                     ],
                 ),
             ],
-            current_act=1,
-            current_beat=1,
+            current_act=1, current_beat=1,
             key_themes=["mystery", "courage", "sacrifice"],
             possible_endings=[
                 "Destroy the tower and save the region",

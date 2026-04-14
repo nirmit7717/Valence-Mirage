@@ -10,31 +10,33 @@ from .outcome import Outcome
 
 class Item(BaseModel):
     """An item in the player's inventory."""
-
     name: str
     description: str = ""
-    stat_bonus: dict[str, int] = {}    # e.g., {"strength": 2}
+    item_type: str = "misc"           # weapon, armor, consumable, quest, misc
+    stat_bonus: dict[str, int] = {}   # e.g., {"strength": 2}
+    mana_restore: int = 0             # Consumables that restore mana
+    hp_restore: int = 0               # Consumables that restore HP
     usable: bool = True
     consumes_on_use: bool = False
 
 
 class PlayerStats(BaseModel):
     """Player character ability scores."""
-
-    strength: int = 10       # Physical actions, combat
-    intelligence: int = 10   # Spells, knowledge, perception
-    dexterity: int = 10      # Agility, stealth, reflexes
-    control: int = 10        # Stability of complex/scale actions
-    charisma: int = 10       # Social, persuasion, deception
-    wisdom: int = 10         # Insight, willpower, awareness
+    strength: int = 10
+    intelligence: int = 10
+    dexterity: int = 10
+    control: int = 10
+    charisma: int = 10
+    wisdom: int = 10
 
 
 class PlayerState(BaseModel):
     """Full player state at any point in the game."""
-
     player_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     name: str = "Adventurer"
     level: int = 1
+    xp: int = 0
+    xp_to_next: int = 100            # XP needed for next level
     hp: int = 50
     max_hp: int = 50
     mana: int = 50
@@ -42,12 +44,31 @@ class PlayerState(BaseModel):
     stats: PlayerStats = Field(default_factory=PlayerStats)
     inventory: list[Item] = []
     status_effects: list[str] = []
-    action_history: list[str] = []  # Last N action_type strings (for saturation)
+    action_history: list[str] = []
+
+    def gain_xp(self, amount: int) -> bool:
+        """Add XP and level up if threshold met. Returns True if leveled up."""
+        self.xp += amount
+        leveled = False
+        while self.xp >= self.xp_to_next:
+            self.xp -= self.xp_to_next
+            self.level += 1
+            self.xp_to_next = int(self.xp_to_next * 1.5)
+            # Stat increase on level up
+            self.max_hp += 5
+            self.max_mana += 5
+            self.hp = min(self.hp + 5, self.max_hp)
+            self.mana = min(self.mana + 5, self.max_mana)
+            # Increment a random stat by 1
+            import random
+            stat = random.choice(["strength", "intelligence", "dexterity", "control", "charisma", "wisdom"])
+            setattr(self.stats, stat, getattr(self.stats, stat) + 1)
+            leveled = True
+        return leveled
 
 
 class Turn(BaseModel):
     """A single turn in the game."""
-
     turn_number: int
     player_input: str
     intent: ActionIntent
@@ -58,7 +79,6 @@ class Turn(BaseModel):
 
 class GameSession(BaseModel):
     """A complete game session."""
-
     session_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     player: PlayerState = Field(default_factory=PlayerState)
     world_state: dict = Field(default_factory=lambda: {
@@ -74,6 +94,5 @@ class GameSession(BaseModel):
     created_at: datetime = Field(default_factory=datetime.now)
 
 
-# Fix forward reference
 from .outcome import ProbabilityScore  # noqa: E402
 Turn.model_rebuild()

@@ -36,6 +36,11 @@
   .hp-bar, .mana-bar { height: 6px; border-radius: 3px; background: #1a1a2a; margin-top: 4px; margin-bottom: 8px; overflow: hidden; }
   .hp-bar .fill { background: #c44; height: 100%; border-radius: 3px; transition: width 0.5s; }
   .mana-bar .fill { background: #44c; height: 100%; border-radius: 3px; transition: width 0.5s; }
+  .xp-bar { height: 4px; border-radius: 2px; background: #1a1a2a; margin-top: 3px; margin-bottom: 8px; overflow: hidden; }
+  .xp-bar .fill { background: #c9a84c; height: 100%; border-radius: 2px; transition: width 0.5s; }
+  .inventory-item { padding: 2px 0; font-size: 12px; color: #aaa; }
+  .inventory-item .item-type { color: #666; font-size: 10px; }
+  .level-up-banner { background: linear-gradient(135deg, #2a1a3a, #1a2a3a); border: 1px solid #c9a84c; border-radius: 6px; padding: 8px 12px; margin-top: 6px; text-align: center; color: #c9a84c; font-weight: bold; font-size: 13px; }
   .score-box { background: #111; border: 1px solid #2a2a4a; border-radius: 6px; padding: 10px; margin-bottom: 8px; font-family: monospace; font-size: 11px; }
   .score-box .label { color: #888; }
   .score-box .value { color: #c9a84c; float: right; }
@@ -66,6 +71,7 @@
     <h2>🎲 Valence Mirage</h2>
     <p style="color:#888;margin-bottom:16px;font-size:13px;">Enter your character's name to begin</p>
     <input type="text" id="playerNameInput" placeholder="Character name..." maxlength="50" value="Adventurer">
+    <input type="text" id="keywordsInput" placeholder="Adventure keywords... (e.g. sci-fi space station horror)" maxlength="200" style="font-size:12px;color:#999;">
     <button onclick="startSession()">Enter the World</button>
   </div>
 </div>
@@ -90,6 +96,8 @@
     <h3>Character</h3>
     <div class="stat-row"><span class="stat-label">Name</span><span class="stat-val" id="sName">—</span></div>
     <div class="stat-row"><span class="stat-label">Level</span><span class="stat-val" id="sLevel">1</span></div>
+    <div class="stat-row"><span class="stat-label">XP</span><span class="stat-val" id="sXp">0 / 100</span></div>
+    <div class="xp-bar"><div class="fill" id="xpFill" style="width:0%"></div></div>
 
     <h3>HP</h3>
     <div class="stat-row"><span class="stat-val" id="sHp">50 / 50</span></div>
@@ -121,6 +129,9 @@
 
     <h3>Effects</h3>
     <div id="sEffects" style="color:#888;font-size:12px;">None</div>
+
+    <h3>Inventory</h3>
+    <div id="sInventory" style="color:#888;font-size:12px;">Empty</div>
   </div>
 </div>
 
@@ -140,11 +151,12 @@ document.getElementById('actionInput').addEventListener('input', function() {
 
 async function startSession() {
   const name = document.getElementById('playerNameInput').value.trim() || 'Adventurer';
+  const keywords = document.getElementById('keywordsInput').value.trim();
   try {
     const res = await fetch(API + '/session/new', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({player_name: name}),
+      body: JSON.stringify({player_name: name, keywords: keywords}),
     });
     const data = await res.json();
     sessionId = data.session_id;
@@ -209,6 +221,14 @@ async function submitAction(actionText) {
     if (data.current_beat) {
       metaHtml += `<span class="beat-tag">📍 ${data.current_beat}</span>`;
     }
+    if (data.state_changes && data.state_changes.items_gained && data.state_changes.items_gained.length > 0) {
+      data.state_changes.items_gained.forEach(item => {
+        metaHtml += `<span class="dice-badge choice">🎁 Loot: ${item}</span>`;
+      });
+    }
+    if (data.level_up && data.level_up.new_level) {
+      metaHtml += `<span class="dice-badge crit-success">⬆️ Level ${data.level_up.new_level}!</span>`;
+    }
     metaHtml += '</div>';
 
     let content = data.narration + metaHtml;
@@ -249,10 +269,25 @@ function addMsg(type, content) {
 }
 
 function updateSidebar(data) {
-  document.getElementById('sHp').textContent = `${data.player_hp} / 50`;
-  document.getElementById('hpFill').style.width = `${(data.player_hp / 50) * 100}%`;
-  document.getElementById('sMana').textContent = `${data.player_mana} / 50`;
-  document.getElementById('manaFill').style.width = `${(data.player_mana / 50) * 100}%`;
+  const maxHp = data.max_hp || 50;
+  const maxMana = data.max_mana || 50;
+  document.getElementById('sHp').textContent = `${data.player_hp} / ${maxHp}`;
+  document.getElementById('hpFill').style.width = `${(data.player_hp / maxHp) * 100}%`;
+  document.getElementById('sMana').textContent = `${data.player_mana} / ${maxMana}`;
+  document.getElementById('manaFill').style.width = `${(data.player_mana / maxMana) * 100}%`;
+  document.getElementById('sLevel').textContent = data.player_level || 1;
+  const xpToNext = data.player_xp_to_next || 100;
+  document.getElementById('sXp').textContent = `${data.player_xp || 0} / ${xpToNext}`;
+  document.getElementById('xpFill').style.width = `${((data.player_xp || 0) / xpToNext) * 100}%`;
+
+  // Inventory
+  if (data.inventory && data.inventory.length > 0) {
+    document.getElementById('sInventory').innerHTML = data.inventory.map(i =>
+      `<div class="inventory-item">${i.name} <span class="item-type">[${i.type}]</span></div>`
+    ).join('');
+  }
+
+  // Level up already shown inline in narration badges
 
   document.getElementById('lastRoll').style.display = 'block';
 
