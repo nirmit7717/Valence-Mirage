@@ -94,6 +94,30 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+import re
+
+def extract_choices(narration: str) -> list[str]:
+    """Extract → prefixed suggestions from narration."""
+    lines = narration.split("\n")
+    choices = []
+    for line in lines:
+        stripped = line.strip()
+        if stripped.startswith("→") or stripped.startswith("-> "):
+            choice = stripped.lstrip("→-> ").strip()
+            if choice:
+                choices.append(choice)
+    return choices
+
+def clean_narration(narration: str) -> str:
+    """Remove choice lines from narration for storage."""
+    lines = narration.split("\n")
+    cleaned = []
+    for line in lines:
+        stripped = line.strip()
+        if not (stripped.startswith("→") or stripped.startswith("-> ")):
+            cleaned.append(line)
+    return "\n".join(cleaned)
+
 
 
 from pydantic import BaseModel, Field
@@ -136,6 +160,7 @@ class ActionResponse(BaseModel):
     choices: list[str] = []
     npc_dialogue: dict | None = None
     guard_warning: str | None = None
+    npcs: list[dict] = []
 
 
 app.mount("/static", StaticFiles(directory="static"), name="static")
@@ -176,11 +201,26 @@ async def create_session(req: NewSessionRequest = NewSessionRequest()):
 
     # Generate campaign NPCs
     try:
-        npcs = await npc_engine.generate_campaign_npcs(blueprint.premise, count=3)
+        npcs = await npc_engine.generate_campaign_npcs(blueprint.premise, count=1)
         session.world_state["npcs"] = {npc.npc_id: npc.model_dump() for npc in npcs}
     except Exception as e:
         logger.warning(f"NPC generation failed: {e}")
         session.world_state["npcs"] = {}
+
+    # Generate opening narration
+    narrator: Narrator = app.state.narrator
+    opening_narration = ""
+    try:
+        opening_narration = await narrator.narrate_opening(
+            title=blueprint.title,
+            premise=blueprint.premise,
+            setting=blueprint.setting,
+            player_name=req.player_name,
+            tone=blueprint.tone if hasattr(blueprint, "tone") else "",
+        )
+        session.world_state["situation"] = opening_narration[-500:]
+    except Exception as e:
+        logger.warning(f"Opening narration failed: {e}")
 
     await db.save_session(session)
 
@@ -204,6 +244,7 @@ async def create_session(req: NewSessionRequest = NewSessionRequest()):
             "location": session.world_state.get("location", ""),
             "situation": session.world_state.get("situation", ""),
         },
+        "opening_narration": opening_narration,
     }
 
 
@@ -354,11 +395,15 @@ async def submit_action(session_id: str, req: ActionRequest):
                 threshold=0,
                 player=session.player,
                 world_state=session.world_state,
-            )
+                npc_dialogue=npc_dialogue,
+                guard_warning=guard_warning,
+                turn_history=session.turn_history,
+                )
         except Exception as e:
+            logger.error(f"No-roll narration failed: {e}", exc_info=True)
             narration = f"You {intent.description}. The world shifts around you."
 
-        session.world_state["situation"] = narration[-300:]
+        session.world_state["situation"] = narration
         session.turn_number += 1
         level_up = sm.apply_changes(session, intent, StateChanges(), "narrative_choice")
 
@@ -406,6 +451,8 @@ async def submit_action(session_id: str, req: ActionRequest):
             current_beat=current_beat_title,
             npc_dialogue=npc_dialogue,
             guard_warning=guard_warning,
+        npcs=[{"name": n.get("personality",{}).get("name","?"), "role": n.get("personality",{}).get("role","?"), "disposition": n.get("disposition",0)} for n in session.world_state.get("npcs", {}).values()],
+        choices=extract_choices(narration),
         )
 
     # 3. Vector similarity for probability scoring
@@ -440,6 +487,10 @@ async def submit_action(session_id: str, req: ActionRequest):
             threshold=score.dice_threshold,
             player=session.player,
             world_state=session.world_state,
+            npc_dialogue=npc_dialogue,
+            guard_warning=guard_warning,
+            npcs=[{"name": n.get("personality",{}).get("name","?"), "role": n.get("personality",{}).get("role","?"), "disposition": n.get("disposition",0)} for n in session.world_state.get("npcs", {}).values()],
+            turn_history=session.turn_history,
         )
     except Exception as e:
         narration = f"Your {intent.action_type} results in {outcome_result}."
@@ -461,7 +512,7 @@ async def submit_action(session_id: str, req: ActionRequest):
             logger.warning(f"Loot generation failed: {e}")
 
     # 10. Update world state
-    session.world_state["situation"] = narration[-300:]
+    session.world_state["situation"] = narration
     session.turn_number += 1
 
     # 11. Advance story beat
@@ -521,6 +572,8 @@ async def submit_action(session_id: str, req: ActionRequest):
         current_beat=current_beat_title,
         npc_dialogue=npc_dialogue,
         guard_warning=guard_warning,
+        npcs=[{"name": n.get("personality",{}).get("name","?"), "role": n.get("personality",{}).get("role","?"), "disposition": n.get("disposition",0)} for n in session.world_state.get("npcs", {}).values()],
+        choices=extract_choices(narration),
     )
 
 

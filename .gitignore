@@ -19,3 +19,4 @@ PROGRESS.md
 # OS
 .DS_Store
 Thumbs.db
+backend/data/chroma_db/

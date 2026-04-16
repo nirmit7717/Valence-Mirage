@@ -132,6 +132,9 @@
 
     <h3>Inventory</h3>
     <div id="sInventory" style="color:#888;font-size:12px;">Empty</div>
+
+    <h3>NPCs</h3>
+    <div id="sNPCs" style="color:#888;font-size:12px;">None</div>
   </div>
 </div>
 
@@ -164,8 +167,13 @@ async function startSession() {
     document.getElementById('sessionInfo').textContent = `Turn 0 | ${data.campaign.title}`;
 
     // Show campaign info
-    const campaignMsg = `<strong>📜 ${data.campaign.title}</strong>\n\n${data.campaign.premise}\n\n<em>Setting: ${data.campaign.setting}</em>`;
-    addMsg('system', campaignMsg);
+    // Opening narration (rich) or fallback to raw campaign data
+    if (data.opening_narration) {
+      addMsg('system', `<strong>📜 ${data.campaign.title}</strong>\n\n${data.opening_narration}`);
+    } else {
+      const campaignMsg = `<strong>📜 ${data.campaign.title}</strong>\n\n${data.campaign.premise}\n\n<em>Setting: ${data.campaign.setting}</em>`;
+      addMsg('system', campaignMsg);
+    }
 
     // Remove the placeholder welcome
     const welcome = document.getElementById('welcomeMsg');
@@ -174,6 +182,16 @@ async function startSession() {
     document.getElementById('connectOverlay').style.display = 'none';
     document.getElementById('gameContainer').style.display = 'grid';
     document.getElementById('actionInput').focus();
+
+    // Show initial NPCs
+    if (data.npcs && data.npcs.length > 0) {
+      document.getElementById('sNPCs').innerHTML = data.npcs.map(n =>
+        `<div style="padding:2px 0;color:#c8a">${n.name} <span style="color:#666;font-size:10px">[${n.role}]</span></div>`
+      ).join('');
+      let npcMsg = '<strong>👥 People You Meet:</strong>\n';
+      data.npcs.forEach(n => { npcMsg += `• <strong>${n.name}</strong> (${n.role}) — disposition: ${(n.disposition||0).toFixed(1)}\n`; });
+      addMsg('system', npcMsg);
+    }
   } catch(e) {
     alert('Failed to connect to server. Is it running?');
   }
@@ -200,6 +218,15 @@ async function submitAction(actionText) {
     });
     const data = await res.json();
     document.getElementById(loadingId).remove();
+
+    // Extract → suggestions from narration, clean them from display
+    let cleanNarration = data.narration || '';
+    const arrowChoices = [];
+    cleanNarration = cleanNarration.replace(/^(?:→|->)\s*(.+)$/gm, (_, choice) => { arrowChoices.push(choice.trim()); return ''; }).trim();
+    data.narration = cleanNarration;
+    if (arrowChoices.length > 0 && (!data.choices || data.choices.length === 0)) {
+      data.choices = arrowChoices;
+    }
 
     // Build narration with meta
     let metaHtml = '<div class="meta">';
@@ -229,7 +256,29 @@ async function submitAction(actionText) {
     if (data.level_up && data.level_up.new_level) {
       metaHtml += `<span class="dice-badge crit-success">⬆️ Level ${data.level_up.new_level}!</span>`;
     }
+    if (data.guard_warning) {
+      metaHtml += `<span class="dice-badge crit-failure">⚠️ Guard: ${data.guard_warning}</span>`;
+    }
     metaHtml += '</div>';
+
+    // NPC dialogue display
+    if (data.npc_dialogue && data.npc_dialogue.dialogue) {
+      const npcName = data.npc_dialogue.name || 'NPC';
+      const npcEmotion = data.npc_dialogue.emotion || '';
+      content += `<div style="background:#1a1225;border:1px solid #3a2a4a;border-radius:8px;padding:10px;margin-top:6px">
+        <div style="color:#c8a;font-weight:bold;margin-bottom:4px">💬 ${npcName}${npcEmotion ? ' ('+npcEmotion+')' : ''}</div>
+        <div style="color:#ccc;font-style:italic">${data.npc_dialogue.dialogue}</div>
+        ${data.npc_dialogue.disposition_change ? '<div style="color:#888;font-size:11px;margin-top:4px">Disposition '+(data.npc_dialogue.disposition_change > 0 ? '+' : '')+data.npc_dialogue.disposition_change.toFixed(2)+'</div>' : ''}
+      </div>`;
+    }
+
+    // Guard warning display
+    if (data.guard_warning) {
+      content += `<div style="background:#2a1515;border:1px solid #6a3a3a;border-radius:8px;padding:10px;margin-top:6px">
+        <div style="color:#e88;font-weight:bold">⚠️ World Resistance</div>
+        <div style="color:#ccc">${data.guard_warning}</div>
+      </div>`;
+    }
 
     let content = data.narration + metaHtml;
 
@@ -309,6 +358,13 @@ function updateSidebar(data) {
 
   if (data.current_beat) {
     document.getElementById('sBeat').textContent = data.current_beat;
+  }
+
+  // NPCs in sidebar
+  if (data.npcs && data.npcs.length > 0) {
+    document.getElementById('sNPCs').innerHTML = data.npcs.map(n =>
+      `<div style="padding:2px 0;color:#c8a">${n.name} <span style="color:#666;font-size:10px">[${n.role}] disp:${(n.disposition||0).toFixed(1)}</span></div>`
+    ).join('');
   }
 }
 

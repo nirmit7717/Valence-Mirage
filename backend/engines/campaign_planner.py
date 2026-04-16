@@ -73,7 +73,7 @@ class CampaignPlanner:
                     {"role": "user", "content": user_msg},
                 ],
                 temperature=0.7,
-                max_tokens=1500,
+                max_tokens=1000,
             )
 
             raw = response.choices[0].message.content.strip()

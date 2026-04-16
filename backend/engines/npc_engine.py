@@ -143,7 +143,7 @@ class NPCEngine:
             disposition=initial_disposition,
         )
 
-    async def generate_campaign_npcs(self, campaign_context: str, count: int = 3) -> list[NPCState]:
+    async def generate_campaign_npcs(self, campaign_context: str, count: int = 1) -> list[NPCState]:
         """Generate NPCs appropriate for a campaign setting."""
         prompt = f"""Generate {count} unique NPCs for a fantasy RPG campaign.
 
@@ -162,7 +162,7 @@ Keep names and roles varied. Make them memorable."""
                     {"role": "user", "content": prompt},
                 ],
                 temperature=0.9,
-                max_tokens=800,
+                max_tokens=500,
             )
 
             raw = response.choices[0].message.content.strip()
