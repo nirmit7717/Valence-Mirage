@@ -36,7 +36,6 @@ class Narrator:
         player: PlayerState,
         world_state: dict,
         npc_dialogue: dict | None = None,
-        guard_warning: str | None = None,
         turn_history: list | None = None,
     ) -> str:
         # Fetch relevant rules for grounding
@@ -109,8 +108,6 @@ class Narrator:
             user_msg += f"NPCs Present: {npc_ctx}\n"
         if npc_dialogue:
             user_msg += f"NPC Interaction: {npc_dialogue.get('dialogue', '')[:200]}\n"
-        if guard_warning:
-            user_msg += f"Guard Warning: {guard_warning}\n"
         if history_ctx:
             user_msg += f"\nRecent History:\n{history_ctx}"
         
@@ -137,16 +134,17 @@ class Narrator:
             return f"Your {intent.action_type} results in {outcome_result}. The world shifts around you."
 
 
-    async def narrate_opening(self, title: str, premise: str, setting: str, player_name: str, tone: str = "") -> str:
+    async def narrate_opening(self, title: str, premise: str, setting: str, player_name: str, tone: str = "", character_class: str = "") -> str:
         """Generate rich opening narration for a new campaign."""
+        class_context = f"\nCharacter class: {character_class}" if character_class else ""
         user_msg = (
             f"Generate an atmospheric opening scene for a dark fantasy RPG.\n"
             f"Campaign: {title}\n"
             f"Premise: {premise}\n"
             f"Setting: {setting}\n"
-            f"Player: {player_name}\n"
+            f"Player: {player_name}{class_context}\n"
             f"Tone: {tone or 'dark fantasy'}\n"
-            f"3-4 paragraphs. Set the scene, introduce the atmosphere, end with a call to action for {player_name}."
+            f"3-4 paragraphs. Set the scene, introduce the atmosphere, reflect the character's nature, end with a call to action for {player_name}."
         )
         try:
             response = await self.client.chat.completions.create(

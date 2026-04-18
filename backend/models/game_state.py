@@ -34,6 +34,7 @@ class PlayerState(BaseModel):
     """Full player state at any point in the game."""
     player_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     name: str = "Adventurer"
+    character_class: str = "warrior"  # warrior, rogue, wizard, cleric, bard
     level: int = 1
     xp: int = 0
     xp_to_next: int = 100            # XP needed for next level

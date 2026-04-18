@@ -52,18 +52,29 @@ class CampaignPlanner:
         )
         self.prompt = PROMPT_PATH.read_text()
 
-    async def generate_blueprint(self, player_name: str = "Adventurer", keywords: str = "") -> CampaignBlueprint:
+    async def generate_blueprint(self, player_name: str = "Adventurer", keywords: str = "", template=None) -> CampaignBlueprint:
         if keywords.strip():
             user_msg = (
                 f"Player character: {player_name}\n"
                 f"Player wants this kind of adventure: {keywords.strip()}\n"
-                f"Generate a matching campaign blueprint."
             )
         else:
             user_msg = (
                 f"Player character: {player_name}\n"
-                f"Generate a complete campaign blueprint for a single-session dark fantasy adventure."
             )
+
+        # Add template structure to prompt
+        if template:
+            template_desc = f"\nCAMPAIGN STRUCTURE (you must follow this exactly):\n"
+            template_desc += f"Total beats: {template.total_beats}, Est. turns: {template.estimated_turns}\n"
+            for act in template.acts:
+                template_desc += f"\nAct {act.act_id}: {act.title} — {act.description}\n"
+                for beat in act.beats:
+                    template_desc += f"  Beat {beat.beat_id}: type={beat.beat_type}, enforcement={beat.enforcement} — {beat.description}\n"
+            user_msg += template_desc
+            user_msg += "\nGenerate a campaign that fills this structure with creative content. Keep the beat types as specified.\n"
+        else:
+            user_msg += "Generate a complete campaign blueprint for a single-session dark fantasy adventure.\n"
 
         try:
             response = await self.client.chat.completions.create(

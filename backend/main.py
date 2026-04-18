@@ -10,8 +10,6 @@ from fastapi.responses import FileResponse
 
 from engines import IntentParser, ProbabilityEngine, DiceEngine, Narrator, StateManager
 from engines.campaign_planner import CampaignPlanner, CampaignBlueprint
-from engines.loot_engine import LootEngine
-from engines.narrative_guard import NarrativeGuard
 from engines.npc_engine import NPCEngine, NPCState, NPCPersonality
 from models.action import ActionIntent
 from models.game_state import GameSession, Turn
@@ -36,8 +34,6 @@ async def lifespan(app: FastAPI):
     app.state.narrator = Narrator()
     app.state.state_manager = StateManager()
     app.state.campaign_planner = CampaignPlanner()
-    app.state.loot_engine = LootEngine()
-    app.state.narrative_guard = NarrativeGuard()
     app.state.npc_engine = NPCEngine()
 
     # Initialize vector store + RAG
@@ -126,6 +122,8 @@ from pydantic import BaseModel, Field
 class NewSessionRequest(BaseModel):
     player_name: str = Field(default="Adventurer", max_length=50)
     keywords: str = Field(default="", max_length=200, description="Keywords/themes for the adventure")
+    character_class: str = Field(default="warrior", description="warrior, rogue, wizard, cleric, bard")
+    campaign_size: str = Field(default="medium", description="small, medium, large")
 
 
 class ActionRequest(BaseModel):
@@ -159,7 +157,6 @@ class ActionResponse(BaseModel):
     current_beat: str | None = None
     choices: list[str] = []
     npc_dialogue: dict | None = None
-    guard_warning: str | None = None
     npcs: list[dict] = []
 
 
@@ -190,11 +187,50 @@ async def create_session(req: NewSessionRequest = NewSessionRequest()):
     npc_engine: NPCEngine = app.state.npc_engine
     db: Database = app.state.db
 
-    # Generate campaign blueprint
-    blueprint = await planner.generate_blueprint(req.player_name, keywords=req.keywords)
-
     # Create session
     session = sm.create_session(player_name=req.player_name)
+
+    # Apply character class
+    from models.character import CharacterClass, CLASS_STATS, CLASS_ABILITIES, CLASS_STARTING_GEAR, CLASS_DESCRIPTIONS
+    try:
+        cls = CharacterClass(req.character_class.lower())
+    except ValueError:
+        cls = CharacterClass.WARRIOR
+
+    class_stats = CLASS_STATS[cls]
+    session.player.character_class = cls.value
+    session.player.stats.strength = class_stats["strength"]
+    session.player.stats.intelligence = class_stats["intelligence"]
+    session.player.stats.dexterity = class_stats["dexterity"]
+    session.player.stats.control = class_stats["control"]
+    session.player.stats.charisma = class_stats["charisma"]
+    session.player.stats.wisdom = class_stats["wisdom"]
+    session.player.max_hp += class_stats["hp_bonus"]
+    session.player.hp = session.player.max_hp
+    session.player.max_mana += class_stats["mana_bonus"]
+    session.player.mana = session.player.max_mana
+
+    # Starting equipment
+    from models.game_state import Item
+    for gear in CLASS_STARTING_GEAR.get(cls, []):
+        session.player.inventory.append(Item(
+            name=gear["name"],
+            item_type=gear["type"],
+            description=f"Starting gear for {cls.value}",
+        ))
+
+    # Store abilities in world_state for combat use
+    abilities = CLASS_ABILITIES.get(cls, [])
+    session.world_state["abilities"] = [a.model_dump() for a in abilities]
+    session.world_state["class_description"] = CLASS_DESCRIPTIONS.get(cls, "")
+
+    # Generate campaign blueprint with template
+    from data.campaign_templates import CAMPAIGN_TEMPLATES
+    template = CAMPAIGN_TEMPLATES.get(req.campaign_size.lower(), CAMPAIGN_TEMPLATES["medium"])
+    session.world_state["campaign_size"] = req.campaign_size.lower()
+    session.world_state["campaign_template"] = template.model_dump()
+
+    blueprint = await planner.generate_blueprint(req.player_name, keywords=req.keywords, template=template)
     session.world_state["campaign"] = blueprint.model_dump()
     session.world_state["location"] = blueprint.setting
     session.world_state["situation"] = blueprint.premise
@@ -217,6 +253,7 @@ async def create_session(req: NewSessionRequest = NewSessionRequest()):
             setting=blueprint.setting,
             player_name=req.player_name,
             tone=blueprint.tone if hasattr(blueprint, "tone") else "",
+            character_class=cls.value,
         )
         session.world_state["situation"] = opening_narration[-500:]
     except Exception as e:
@@ -229,6 +266,10 @@ async def create_session(req: NewSessionRequest = NewSessionRequest()):
     return {
         "session_id": session.session_id,
         "player": session.player.model_dump(),
+        "character_class": cls.value,
+        "class_description": CLASS_DESCRIPTIONS.get(cls, ""),
+        "abilities": [a.model_dump() for a in abilities],
+        "campaign_size": req.campaign_size.lower(),
         "campaign": {
             "title": blueprint.title,
             "premise": blueprint.premise,
@@ -283,7 +324,6 @@ async def list_sessions():
 async def submit_action(session_id: str, req: ActionRequest):
     sm: StateManager = app.state.state_manager
     db: Database = app.state.db
-    guard: NarrativeGuard = app.state.narrative_guard
     retriever: RuleRetriever = app.state.rule_retriever
 
     session = sm.get_session(session_id)
@@ -301,17 +341,6 @@ async def submit_action(session_id: str, req: ActionRequest):
     narrator: Narrator = app.state.narrator
     npc_engine: NPCEngine = app.state.npc_engine
 
-    # 0. Narrative Guard — check for coherence breaking
-    guard_warning = None
-    try:
-        world_ctx = session.world_state.get("situation", "")[:200]
-        guard_result = await guard.check_action(req.action, world_ctx)
-        if guard_result.get("break_detected"):
-            redirect = guard_result.get("suggested_redirect", "Try a different approach.")
-            guard_warning = f"The world resists your attempt to break its rules. {redirect}"
-            logger.info(f"Guard blocked action: {guard_result.get('reason')}")
-    except Exception as e:
-        logger.warning(f"Guard check skipped: {e}")
 
     stats_summary = (
         f"STR={session.player.stats.strength} "
@@ -396,7 +425,6 @@ async def submit_action(session_id: str, req: ActionRequest):
                 player=session.player,
                 world_state=session.world_state,
                 npc_dialogue=npc_dialogue,
-                guard_warning=guard_warning,
                 turn_history=session.turn_history,
                 )
         except Exception as e:
@@ -450,7 +478,6 @@ async def submit_action(session_id: str, req: ActionRequest):
             level_up=level_up,
             current_beat=current_beat_title,
             npc_dialogue=npc_dialogue,
-            guard_warning=guard_warning,
         npcs=[{"name": n.get("personality",{}).get("name","?"), "role": n.get("personality",{}).get("role","?"), "disposition": n.get("disposition",0)} for n in session.world_state.get("npcs", {}).values()],
         choices=extract_choices(narration),
         )
@@ -488,7 +515,6 @@ async def submit_action(session_id: str, req: ActionRequest):
             player=session.player,
             world_state=session.world_state,
             npc_dialogue=npc_dialogue,
-            guard_warning=guard_warning,
             npcs=[{"name": n.get("personality",{}).get("name","?"), "role": n.get("personality",{}).get("role","?"), "disposition": n.get("disposition",0)} for n in session.world_state.get("npcs", {}).values()],
             turn_history=session.turn_history,
         )
@@ -499,17 +525,6 @@ async def submit_action(session_id: str, req: ActionRequest):
     state_changes = _compute_state_changes(intent, outcome_result, roll)
     level_up = sm.apply_changes(session, intent, state_changes, outcome_result)
 
-    # 8. Loot generation
-    if outcome_result in ("critical_success", "success", "partial_success"):
-        loot: LootEngine = app.state.loot_engine
-        loot_context = f"{intent.description} in {session.world_state.get('location', 'unknown')}"
-        try:
-            loot_item = await loot.generate_loot(intent, outcome_result, loot_context)
-            if loot_item:
-                session.player.inventory.append(loot_item)
-                state_changes.items_gained.append(loot_item.name)
-        except Exception as e:
-            logger.warning(f"Loot generation failed: {e}")
 
     # 10. Update world state
     session.world_state["situation"] = narration
@@ -571,7 +586,6 @@ async def submit_action(session_id: str, req: ActionRequest):
         level_up=level_up,
         current_beat=current_beat_title,
         npc_dialogue=npc_dialogue,
-        guard_warning=guard_warning,
         npcs=[{"name": n.get("personality",{}).get("name","?"), "role": n.get("personality",{}).get("role","?"), "disposition": n.get("disposition",0)} for n in session.world_state.get("npcs", {}).values()],
         choices=extract_choices(narration),
     )
