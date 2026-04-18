@@ -111,7 +111,7 @@ backend/
 
 ### Prerequisites
 - Python 3.10+
-- NVIDIA NIM API key
+- An API key from **NVIDIA NIM** or **OpenRouter**
 
 ### Setup
 
@@ -127,12 +127,18 @@ source venv/bin/activate
 # Install dependencies
 pip install -r requirements.txt
 
-# Set your API key
-export NIM_API_KEY="your-key-here"
+# Set your API key (use one of the following)
+export NVIDIA_API_KEY="your-nvidia-nim-key-here"
+# OR
+export OPENROUTER_API_KEY="your-openrouter-key-here"
+
+# Update config.py to match your provider if using OpenRouter
 
 # Run the server
 python main.py
 ```
+
+> **Note:** You need to provide your own API key. The project uses NVIDIA NIM by default (free tier available). If using OpenRouter, update `config.py` to point to the OpenRouter endpoint and model.
 
 Open `http://localhost:8000` in your browser.
 
@@ -164,15 +170,15 @@ POST /session/new
 
 ## Character Classes
 
-| Class | Strength | Dexterity | Intelligence | Special |
-|-------|----------|-----------|-------------|---------|
-| ⚔️ Warrior | 14 | 10 | 8 | High HP, Power Strike, Cleave |
-| 🗡️ Rogue | 10 | 14 | 10 | Backstab, Poison Blade, Shadow Step |
-| 🔮 Wizard | 6 | 8 | 14 | Fireball, Lightning, Arcane Barrier |
-| ✨ Cleric | 10 | 8 | 10 | Heal, Smite, Bless, Holy Shield |
-| 🎵 Bard | 8 | 10 | 10 | Inspire, Mock, Charm, Dissonance |
+| Class | STR | DEX | INT | CON | CHA | WIS | HP Bonus | Mana Bonus | Abilities |
+|-------|-----|-----|-----|-----|-----|-----|----------|------------|----------|
+| ⚔️ Warrior | 14 | 10 | 8 | 12 | 8 | 8 | +15 | +0 | Power Strike, Shield Block, Battle Cry, Cleave |
+| 🗡️ Rogue | 10 | 14 | 10 | 8 | 10 | 8 | +5 | +5 | Backstab, Dodge, Poison Blade, Shadow Step |
+| 🔮 Wizard | 6 | 8 | 14 | 12 | 8 | 12 | -5 | +20 | Fireball, Ice Shield, Lightning Bolt, Arcane Barrier |
+| ✨ Cleric | 10 | 8 | 10 | 10 | 10 | 12 | +5 | +10 | Heal, Smite, Bless, Holy Shield |
+| 🎵 Bard | 8 | 10 | 10 | 8 | 14 | 10 | +0 | +10 | Inspire, Mock, Charm, Dissonance |
 
-Each class has 4 abilities with damage dice, mana costs, and status effects.
+Each class starts with unique equipment. Abilities have damage dice (e.g. `2d8+3`), mana costs, and status effects (stunned, burning, blessed, etc.).
 
 ---
 
