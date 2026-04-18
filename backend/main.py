@@ -11,9 +11,11 @@ from fastapi.responses import FileResponse
 from engines import IntentParser, ProbabilityEngine, DiceEngine, Narrator, StateManager
 from engines.campaign_planner import CampaignPlanner, CampaignBlueprint
 from engines.npc_engine import NPCEngine, NPCState, NPCPersonality
+from engines.combat_engine import CombatEngine
 from models.action import ActionIntent
-from models.game_state import GameSession, Turn
+from models.game_state import GameSession, Turn, Item
 from models.outcome import Outcome, StateChanges, ProbabilityScore, ScoreBreakdown
+from models.combat import CombatState, CombatAction, CombatActionType
 from database import Database
 from rag import RuleRetriever, VectorStore
 import config
@@ -35,6 +37,7 @@ async def lifespan(app: FastAPI):
     app.state.state_manager = StateManager()
     app.state.campaign_planner = CampaignPlanner()
     app.state.npc_engine = NPCEngine()
+    app.state.combat_engine = CombatEngine()
 
     # Initialize vector store + RAG
     app.state.vector_store = VectorStore()
@@ -589,6 +592,188 @@ async def submit_action(session_id: str, req: ActionRequest):
         npcs=[{"name": n.get("personality",{}).get("name","?"), "role": n.get("personality",{}).get("role","?"), "disposition": n.get("disposition",0)} for n in session.world_state.get("npcs", {}).values()],
         choices=extract_choices(narration),
     )
+
+
+# ─── Combat Endpoints ───
+
+@app.post("/session/{session_id}/combat/start")
+async def start_combat(session_id: str, enemy_tier: int = 1, enemy_key: str | None = None):
+    """Initiate a combat encounter."""
+    sm: StateManager = app.state.state_manager
+    db: Database = app.state.db
+    combat_engine: CombatEngine = app.state.combat_engine
+
+    session = sm.get_session(session_id)
+    if not session:
+        session = await db.load_session(session_id)
+        if not session:
+            raise HTTPException(status_code=404, detail="Session not found")
+
+    context = session.world_state.get("situation", "")[:200]
+    combat = combat_engine.initiate_combat(
+        player_state=session.player,
+        enemy_tier=enemy_tier,
+        enemy_key=enemy_key,
+        narrative_context=context,
+    )
+    session.world_state["combat"] = combat.model_dump()
+    await db.save_session(session)
+
+    enemy = combat.enemies[0]
+    return {
+        "combat_id": combat.combat_id,
+        "enemy": {"name": enemy.name, "hp": enemy.hp, "max_hp": enemy.max_hp, "armor": enemy.armor},
+        "player": {"hp": combat.player.hp, "max_hp": combat.player.max_hp, "mana": combat.player.mana, "max_mana": combat.player.max_mana},
+        "turn": combat.turn_number,
+        "status": combat.status,
+        "message": f"A {enemy.name} appears! Prepare for battle!",
+    }
+
+
+@app.post("/session/{session_id}/combat/action")
+async def combat_action(session_id: str, ability_name: str = "Attack", target: str = ""):
+    """Execute a player combat action."""
+    sm: StateManager = app.state.state_manager
+    db: Database = app.state.db
+    combat_engine: CombatEngine = app.state.combat_engine
+    narrator: Narrator = app.state.narrator
+
+    session = sm.get_session(session_id)
+    if not session:
+        session = await db.load_session(session_id)
+        if not session:
+            raise HTTPException(status_code=404, detail="Session not found")
+
+    combat_data = session.world_state.get("combat")
+    if not combat_data:
+        raise HTTPException(status_code=400, detail="No active combat")
+    combat = CombatState(**combat_data)
+    if combat.status != "active":
+        raise HTTPException(status_code=400, detail=f"Combat is {combat.status}")
+
+    # Find the ability
+    abilities = session.world_state.get("abilities", [])
+    chosen = None
+    for a in abilities:
+        if a["name"].lower() == ability_name.lower():
+            chosen = a
+            break
+
+    # Determine action type
+    if ability_name.lower() == "flee":
+        action_type = CombatActionType.FLEE
+    elif chosen:
+        atype = chosen.get("ability_type", "attack")
+        action_type = CombatActionType(atype) if atype in [e.value for e in CombatActionType] else CombatActionType.ATTACK
+    else:
+        action_type = CombatActionType.ATTACK
+
+    action = CombatAction(
+        actor="player",
+        action_type=action_type,
+        ability_name=ability_name,
+        damage_dice=chosen.get("damage_dice", "1d6") if chosen else "1d6",
+        mana_cost=chosen.get("mana_cost", 0) if chosen else 0,
+        status_effect=chosen.get("status_effect") if chosen else None,
+        status_duration=chosen.get("status_duration", 0) if chosen else 0,
+        target=target or (combat.enemies[0].name if combat.enemies else ""),
+    )
+
+    # Tick player effects
+    combat = combat_engine.tick_player_effects(combat)
+
+    # Resolve player action
+    combat = combat_engine.resolve_player_action(combat, action)
+    player_log = combat.log[-1].message if combat.log else ""
+
+    # Enemy turn if combat still active
+    enemy_log = ""
+    if combat.status == "active":
+        combat = combat_engine.resolve_enemy_action(combat)
+        enemy_log = combat.log[-1].message if combat.log else ""
+
+    combat.turn_number += 1
+
+    # Combat narration
+    narration = ""
+    try:
+        full_action = f"{player_log} {enemy_log}".strip()
+        narration = await narrator.narrate_combat_action(
+            action_description=full_action,
+            result=combat.status,
+            character_class=session.player.character_class,
+        )
+    except Exception:
+        narration = f"{player_log} {enemy_log}"
+
+    # Handle combat end
+    rewards = {"xp": 0, "items": [], "loot_descriptions": []}
+    if combat.status in ("victory", "defeat"):
+        if combat.status == "victory":
+            rewards = combat_engine.get_combat_rewards(combat)
+            session.player.gain_xp(rewards["xp"])
+            for item in rewards["items"]:
+                session.player.inventory.append(item)
+        # Sync combat HP back to player
+        if combat.player:
+            session.player.hp = combat.player.hp
+            session.player.mana = combat.player.mana
+        session.world_state.pop("combat", None)
+    else:
+        # Sync HP/mana mid-combat
+        if combat.player:
+            session.player.hp = combat.player.hp
+            session.player.mana = combat.player.mana
+        session.world_state["combat"] = combat.model_dump()
+
+    await db.save_session(session)
+
+    # Build enemy info
+    enemy_info = None
+    if combat.enemies:
+        e = combat.enemies[0]
+        enemy_info = {"name": e.name, "hp": e.hp, "max_hp": e.max_hp,
+                      "armor": e.armor, "status_effects": [se.name for se in e.status_effects]}
+
+    return {
+        "narration": narration,
+        "player_log": player_log,
+        "enemy_log": enemy_log,
+        "combat_status": combat.status,
+        "enemy": enemy_info,
+        "player": {"hp": session.player.hp, "max_hp": session.player.max_hp,
+                    "mana": session.player.mana, "max_mana": session.player.max_mana,
+                    "status_effects": [se.name for se in combat.player.status_effects] if combat.player else []},
+        "turn": combat.turn_number,
+        "rewards": rewards,
+        "abilities": abilities,
+    }
+
+
+@app.get("/session/{session_id}/combat")
+async def get_combat_state(session_id: str):
+    """Get current combat state."""
+    sm: StateManager = app.state.state_manager
+    session = sm.get_session(session_id)
+    if not session:
+        db: Database = app.state.db
+        session = await db.load_session(session_id)
+        if not session:
+            raise HTTPException(status_code=404, detail="Session not found")
+
+    combat_data = session.world_state.get("combat")
+    if not combat_data:
+        return {"active": False}
+    combat = CombatState(**combat_data)
+    enemy = combat.enemies[0] if combat.enemies else None
+    return {
+        "active": True,
+        "status": combat.status,
+        "turn": combat.turn_number,
+        "current_turn": combat.current_turn,
+        "enemy": {"name": enemy.name, "hp": enemy.hp, "max_hp": enemy.max_hp} if enemy else None,
+        "player": {"hp": combat.player.hp, "max_hp": combat.player.max_hp} if combat.player else None,
+    }
 
 
 @app.get("/session/{session_id}/history")

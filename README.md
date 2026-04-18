@@ -216,9 +216,9 @@ Every action goes through:
 - [x] Dynamic NPCs with disposition/trust
 - [x] Character class system
 - [x] Structured campaign templates
-- [ ] Turn-based combat with dice mechanics
+- [x] Turn-based combat with dice mechanics
 - [ ] RL-based player personalization
-- [ ] Deterministic loot tables
+- [x] Deterministic loot tables
 
 ---
 

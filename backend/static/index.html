@@ -148,6 +148,18 @@
     <h3>NPCs</h3>
     <div id="sNPCs" style="color:#888;font-size:12px;">None</div>
   </div>
+
+  <!-- Combat Overlay -->
+  <div id="combatOverlay" style="display:none;position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.7);z-index:100;">
+    <div style="max-width:500px;margin:80px auto;background:#1a1a2e;border:2px solid #c9a84c;border-radius:12px;padding:24px;">
+      <h2 style="color:#c9a84c;text-align:center;margin-bottom:16px;">⚔️ Combat</h2>
+      <div id="combatEnemyInfo" style="text-align:center;margin-bottom:12px;"></div>
+      <div id="combatPlayerInfo" style="margin-bottom:12px;"></div>
+      <div id="combatLog" style="max-height:150px;overflow-y:auto;margin-bottom:12px;padding:8px;background:#0a0a14;border-radius:6px;font-size:13px;color:#ccc;"></div>
+      <div id="combatAbilities" style="display:grid;grid-template-columns:1fr 1fr;gap:8px;"></div>
+      <button onclick="combatFlee()" style="width:100%;margin-top:8px;padding:8px;background:#3a1a1a;border:1px solid #a44;color:#f88;border-radius:4px;cursor:pointer;">🏃 Flee</button>
+    </div>
+  </div>
 </div>
 
 <script>
@@ -387,10 +399,111 @@ function updateSidebar(data) {
   }
 }
 
+// ─── Combat Functions ───
+let inCombat = false;
+let combatAbilities = [];
+
+async function startCombatEncounter(enemyTier, enemyKey) {
+  if (!sessionId) return;
+  try {
+    const params = new URLSearchParams();
+    if (enemyTier) params.set('enemy_tier', enemyTier);
+    if (enemyKey) params.set('enemy_key', enemyKey);
+    const res = await fetch(API + '/session/' + sessionId + '/combat/start?' + params, {method: 'POST'});
+    const data = await res.json();
+    if (data.message) addMsg('system', `<strong>⚔️ ${data.message}</strong>`);
+    inCombat = true;
+    document.getElementById('combatOverlay').style.display = 'block';
+    updateCombatUI(data);
+  } catch(e) { alert('Combat start failed: ' + e); }
+}
+
+async function combatUseAbility(abilityName) {
+  if (!sessionId || !inCombat) return;
+  try {
+    const params = new URLSearchParams();
+    params.set('ability_name', abilityName);
+    const res = await fetch(API + '/session/' + sessionId + '/combat/action?' + params, {method: 'POST'});
+    const data = await res.json();
+    // Log
+    if (data.narration) addMsg('system', data.narration);
+    if (data.player_log) document.getElementById('combatLog').innerHTML += '<div style="color:#8c8">' + data.player_log + '</div>';
+    if (data.enemy_log) document.getElementById('combatLog').innerHTML += '<div style="color:#c88">' + data.enemy_log + '</div>';
+    updateCombatUI(data);
+    // Handle end
+    if (data.combat_status === 'victory') {
+      endCombat('victory', data.rewards);
+    } else if (data.combat_status === 'defeat') {
+      endCombat('defeat', null);
+    }
+    // Update sidebar
+    if (data.player) {
+      document.getElementById('sHp').textContent = data.player.hp + ' / ' + data.player.max_hp;
+      document.getElementById('hpFill').style.width = (data.player.hp / data.player.max_hp * 100) + '%';
+    }
+  } catch(e) { alert('Combat action failed: ' + e); }
+}
+
+async function combatFlee() {
+  combatUseAbility('Flee');
+}
+
+function updateCombatUI(data) {
+  // Enemy info
+  if (data.enemy) {
+    const hpPct = Math.max(0, data.enemy.hp / data.enemy.max_hp * 100);
+    document.getElementById('combatEnemyInfo').innerHTML = `
+      <div style="color:#f88;font-size:16px;font-weight:bold;">${data.enemy.name}</div>
+      <div style="background:#3a1a1a;border-radius:4px;height:12px;margin:6px 0;">
+        <div style="background:#f44;height:100%;border-radius:4px;width:${hpPct}%;transition:width 0.3s;"></div>
+      </div>
+      <div style="color:#888;font-size:12px;">HP: ${data.enemy.hp}/${data.enemy.max_hp} | Armor: ${data.enemy.armor || 0}</div>
+      ${data.enemy.status_effects && data.enemy.status_effects.length ? '<div style="color:#c8a;font-size:11px;">Effects: '+data.enemy.status_effects.join(', ')+'</div>' : ''}
+    `;
+  }
+  // Player info
+  if (data.player) {
+    document.getElementById('combatPlayerInfo').innerHTML = `
+      <div style="color:#8c8;font-size:13px;">HP: ${data.player.hp}/${data.player.max_hp} | Mana: ${data.player.mana}/${data.player.max_mana}</div>
+      ${data.player.status_effects && data.player.status_effects.length ? '<div style="color:#c8a;font-size:11px;">Effects: '+data.player.status_effects.join(', ')+'</div>' : ''}
+    `;
+  }
+  // Abilities
+  if (data.abilities) {
+    combatAbilities = data.abilities;
+    document.getElementById('combatAbilities').innerHTML = data.abilities.map(a => {
+      const cost = a.mana_cost ? ` (${a.mana_cost}mp)` : '';
+      const dmg = a.damage_dice ? ` ${a.damage_dice}` : '';
+      const col = a.ability_type === 'attack' ? '#1a3a1a' : a.ability_type === 'defend' ? '#1a2a3a' : '#2a2a3a';
+      const bdr = a.ability_type === 'attack' ? '#4a4' : a.ability_type === 'defend' ? '#48f' : '#a8a';
+      return `<button onclick="combatUseAbility('${a.name}')" style="padding:8px;background:${col};border:1px solid ${bdr};color:#ddd;border-radius:4px;cursor:pointer;font-size:12px;">${a.name}${cost}${dmg}</button>`;
+    }).join('');
+  }
+}
+
+function endCombat(result, rewards) {
+  inCombat = false;
+  setTimeout(() => {
+    document.getElementById('combatOverlay').style.display = 'none';
+    if (result === 'victory') {
+      let msg = '<strong>🏆 Victory!</strong>';
+      if (rewards) {
+        if (rewards.xp) msg += `\n+${rewards.xp} XP`;
+        if (rewards.loot_descriptions) rewards.loot_descriptions.forEach(l => msg += `\n${l}`);
+      }
+      addMsg('system', msg);
+    } else {
+      addMsg('system', '<strong>💀 Defeat...</strong>\nThe darkness claims you.');
+    }
+  }, 1500);
+}
+
 document.addEventListener('keydown', e => {
   if (e.key === 'Enter') {
     if (document.getElementById('connectOverlay').style.display !== 'none') {
       startSession();
+    } else if (inCombat) {
+      // In combat, Enter does nothing (use ability buttons)
     } else {
       submitAction();
     }

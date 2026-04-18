@@ -160,3 +160,27 @@ class Narrator:
         except Exception as e:
             logger.warning(f"Opening narration failed: {e}")
             return f"You find yourself in {setting}. {premise} The journey ahead is shrouded in mystery."
+
+    async def narrate_combat_action(self, action_description: str, result: str,
+                                     character_class: str = "") -> str:
+        """Short combat narration — 2-3 sentences, fast-paced."""
+        class_ctx = f" Character class: {character_class}." if character_class else ""
+        user_msg = (
+            f"Action: {action_description}\n"
+            f"Result: {result}{class_ctx}\n"
+            f"Describe this combat action in 2-3 sentences. Focus on the impact."
+        )
+        try:
+            response = await self.client.chat.completions.create(
+                model=config.INTENT_MODEL,  # fast 8b for combat
+                messages=[
+                    {"role": "system", "content": self.prompt},  # combat_narrator prompt loaded separately
+                    {"role": "user", "content": user_msg},
+                ],
+                temperature=0.8,
+                max_tokens=150,
+            )
+            return response.choices[0].message.content.strip()
+        except Exception as e:
+            logger.warning(f"Combat narration failed: {e}")
+            return f"{action_description}. {result}."
