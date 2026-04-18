@@ -180,9 +180,9 @@ Each class has 4 abilities with damage dice, mana costs, and status effects.
 
 | Size | Beats | Est. Turns | Session Time | Best For |
 |------|-------|-----------|-------------|---------|
-| ⚡ Small | 6 | 12–15 | ~20 min | Quick adventures |
-| 🗺️ Medium | 10 | 20–25 | ~45 min | Standard quest |
-| 📖 Large | 16 | 30–35 | ~1.5 hrs | Epic saga |
+| ⚡ Small | 6 | 12–15 | ~15 min | Quick adventures |
+| 🗺️ Medium | 10 | 20–25 | ~30 min | Standard quest |
+| 📖 Large | 16 | 30–35 | ~45 min | Epic saga |
 
 Templates enforce narrative pacing (combat, social, exploration, choice beats) while the AI fills in creative content. Soft enforcement with escalation — if you avoid combat too long, the story pushes you into it.
 
@@ -218,7 +218,7 @@ Every action goes through:
 
 ## License
 
-TBD
+MIT
 
 ---
 
