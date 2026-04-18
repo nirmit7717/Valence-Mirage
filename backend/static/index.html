@@ -334,6 +334,10 @@ async function submitAction(actionText) {
   busy = false;
   document.getElementById('submitBtn').disabled = false;
   document.getElementById('actionInput').focus();
+
+  // Clear combat trigger button (user took a non-combat action)
+  const combatBtn = document.getElementById('combatTriggerBtn');
+  if (combatBtn) combatBtn.remove();
 }
 
 function addMsg(type, content) {
@@ -388,7 +392,16 @@ function updateSidebar(data) {
   document.getElementById('sResult').textContent = data.outcome.replace(/_/g, ' ');
 
   if (data.current_beat) {
-    document.getElementById('sBeat').textContent = data.current_beat;
+    const beatDiv = document.getElementById('sBeat');
+    beatDiv.textContent = data.current_beat;
+    if (data.combat_beat_available) {
+      const combatBtn = document.createElement('button');
+      combatBtn.id = 'combatTriggerBtn';
+      combatBtn.textContent = '⚔️ Battle!';
+      combatBtn.style.cssText = 'margin-top:4px;padding:4px 8px;background:#3a1a1a;border:1px solid #a44;color:#f88;border-radius:4px;cursor:pointer;font-size:11px;';
+      combatBtn.onclick = () => startCombatEncounter();
+      beatDiv.parentNode.insertBefore(combatBtn, beatDiv.nextSibling);
+    }
   }
 
   // NPCs in sidebar
@@ -403,7 +416,7 @@ function updateSidebar(data) {
 let inCombat = false;
 let combatAbilities = [];
 
-async function startCombatEncounter(enemyTier, enemyKey) {
+async function startCombatEncounter(enemyTier = 1, enemyKey = null) {
   if (!sessionId) return;
   try {
     const params = new URLSearchParams();

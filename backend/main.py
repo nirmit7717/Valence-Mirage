@@ -161,6 +161,8 @@ class ActionResponse(BaseModel):
     choices: list[str] = []
     npc_dialogue: dict | None = None
     npcs: list[dict] = []
+    combat_beat_available: bool = False
+    current_act: int | None = None
 
 
 app.mount("/static", StaticFiles(directory="static"), name="static")
@@ -237,6 +239,14 @@ async def create_session(req: NewSessionRequest = NewSessionRequest()):
     session.world_state["campaign"] = blueprint.model_dump()
     session.world_state["location"] = blueprint.setting
     session.world_state["situation"] = blueprint.premise
+
+    # Track current beat for combat triggers
+    if blueprint.acts and blueprint.acts[0].beats:
+        session.world_state["current_act"] = blueprint.acts[0].act_id
+        session.world_state["current_beat"] = blueprint.acts[0].beats[0].beat_id
+    else:
+        session.world_state["current_act"] = 1
+        session.world_state["current_beat"] = 1
 
     # Generate campaign NPCs
     try:
@@ -360,12 +370,18 @@ async def submit_action(session_id: str, req: ActionRequest):
 
     campaign_data = session.world_state.get("campaign")
     current_beat_title = None
+    combat_beat_available = False
     if campaign_data:
         bp = CampaignBlueprint(**campaign_data)
         beat = planner.get_current_beat(bp)
         if beat:
             world_context += f" Current story beat: {beat.title} — {beat.description}"
             current_beat_title = beat.title
+            if beat.type == "combat":
+                combat_beat_available = True
+        # Update current act/beat tracking
+        session.world_state["current_act"] = bp.acts[0].act_id if bp.acts else 1
+        session.world_state["current_beat"] = bp.acts[0].beats[0].beat_id if bp.acts and bp.acts[0].beats else 1
 
     # 1. Intent Parsing
     try:
@@ -588,6 +604,8 @@ async def submit_action(session_id: str, req: ActionRequest):
         inventory=[{"name": i.name, "type": i.item_type} for i in session.player.inventory],
         level_up=level_up,
         current_beat=current_beat_title,
+        combat_beat_available=combat_beat_available,
+        current_act=session.world_state.get("current_act", 1),
         npc_dialogue=npc_dialogue,
         npcs=[{"name": n.get("personality",{}).get("name","?"), "role": n.get("personality",{}).get("role","?"), "disposition": n.get("disposition",0)} for n in session.world_state.get("npcs", {}).values()],
         choices=extract_choices(narration),
