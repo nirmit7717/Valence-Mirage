@@ -115,32 +115,45 @@ backend/
 
 ### Setup
 
+#### 1. Clone the repository
 ```bash
-# Clone
 git clone https://github.com/nirmit7717/Valence-Mirage.git
 cd Valence-Mirage/backend
+```
 
-# Create virtual environment
+#### 2. Create and Activate Virtual Environment
+**Windows:**
+```powershell
 python -m venv venv
+.\venv\Scripts\activate
+```
+
+**macOS/Linux:**
+```bash
+python3 -m venv venv
 source venv/bin/activate
+```
 
-# Install dependencies
+#### 3. Install Dependencies
+```bash
 pip install -r requirements.txt
+```
 
-# Set your API key (use one of the following)
-export NVIDIA_API_KEY="your-nvidia-nim-key-here"
-# OR
-export OPENROUTER_API_KEY="your-openrouter-key-here"
+#### 4. Configure Environment Variables
+1. Rename `.env.example` to `.env` (or create a new `.env` file).
+2. Open `.env` and add your **NVIDIA_API_KEY** or **OPENROUTER_API_KEY**.
 
-# Update config.py to match your provider if using OpenRouter
+```env
+NVIDIA_API_KEY="your-key-here"
+# Optional: NARRATOR_MODEL="meta/llama-3.3-70b-instruct"
+```
 
-# Run the server
+#### 5. Run the Server
+```bash
 python main.py
 ```
 
-> **Note:** You need to provide your own API key. The project uses NVIDIA NIM by default (free tier available). If using OpenRouter, update `config.py` to point to the OpenRouter endpoint and model.
-
-Open `http://localhost:8000` in your browser.
+Open [http://localhost:8000](http://localhost:8000) in your browser.
 
 ### API Endpoints
 

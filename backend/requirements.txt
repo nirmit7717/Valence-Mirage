@@ -6,3 +6,4 @@ python-dotenv==1.2.2
 httpx==0.28.1
 numpy==2.2.5
 aiosqlite==0.21.0
+chromadb==0.6.3
