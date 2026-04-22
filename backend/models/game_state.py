@@ -56,14 +56,22 @@ class PlayerState(BaseModel):
             self.level += 1
             self.xp_to_next = int(self.xp_to_next * 1.5)
             # Stat increase on level up
-            self.max_hp += 5
-            self.max_mana += 5
-            self.hp = min(self.hp + 5, self.max_hp)
-            self.mana = min(self.mana + 5, self.max_mana)
-            # Increment a random stat by 1
-            import random
-            stat = random.choice(["strength", "intelligence", "dexterity", "control", "charisma", "wisdom"])
-            setattr(self.stats, stat, getattr(self.stats, stat) + 1)
+            self.max_hp += 10
+            self.max_mana += 10
+            self.hp = self.max_hp
+            self.mana = self.max_mana
+            
+            # Universal +1 to all stats
+            primary_stat = {
+                "warrior": "strength", "rogue": "dexterity",
+                "wizard": "intelligence", "cleric": "wisdom",
+                "bard": "charisma"
+            }.get(self.character_class.lower(), "strength")
+            
+            for s in ["strength", "intelligence", "dexterity", "control", "charisma", "wisdom"]:
+                bonus = 2 if s == primary_stat else 1
+                setattr(self.stats, s, getattr(self.stats, s) + bonus)
+                
             leveled = True
         return leveled
 

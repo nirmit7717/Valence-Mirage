@@ -10,6 +10,7 @@ from models.game_state import PlayerState
 from engines.campaign_planner import CampaignPlanner, CampaignBlueprint
 from rag import RuleRetriever
 import config
+from tenacity import retry, stop_after_attempt, wait_exponential
 
 logger = logging.getLogger(__name__)
 
@@ -25,7 +26,19 @@ class Narrator:
             api_key=config.NVIDIA_API_KEY,
         )
         self.prompt = PROMPT_PATH.read_text()
+        combat_prompt_path = Path(__file__).parent.parent / "prompts" / "combat_narrator.txt"
+        self.combat_prompt = combat_prompt_path.read_text()
         self.rule_retriever = RuleRetriever()
+
+    @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=8))
+    async def _safe_chat_completion(self, messages, max_tokens):
+        """Wrapper for OpenAI call with tenacity retry."""
+        return await self.client.chat.completions.create(
+            model=config.NARRATOR_MODEL,
+            messages=messages,
+            max_tokens=max_tokens,
+            temperature=0.8,
+        )
 
     async def narrate(
         self,
@@ -138,13 +151,20 @@ class Narrator:
         """Generate rich opening narration for a new campaign."""
         class_context = f"\nCharacter class: {character_class}" if character_class else ""
         user_msg = (
-            f"Generate an atmospheric opening scene for a dark fantasy RPG.\n"
+            f"Generate a highly structured and atmospheric opening scene for a dark fantasy RPG.\n"
             f"Campaign: {title}\n"
             f"Premise: {premise}\n"
             f"Setting: {setting}\n"
             f"Player: {player_name}{class_context}\n"
             f"Tone: {tone or 'dark fantasy'}\n"
-            f"3-4 paragraphs. Set the scene, introduce the atmosphere, reflect the character's nature, end with a call to action for {player_name}."
+            f"Instructions:\n"
+            f"1. Properly define the vivid scene and the exact situation the player is currently in (avoid vague contexts).\n"
+            f"2. Write 2-3 paragraphs establishing the world and the immediate hook.\n"
+            f"3. End by providing EXACTLY 3 actionable choices for the player to begin their journey, using this exact format:\n"
+            f"  → [action suggestion 1]\n"
+            f"  → [action suggestion 2]\n"
+            f"  → [action suggestion 3]\n"
+            f"Make the choices under 100 characters each."
         )
         try:
             response = await self.client.chat.completions.create(
@@ -174,7 +194,7 @@ class Narrator:
             response = await self.client.chat.completions.create(
                 model=config.INTENT_MODEL,  # fast 8b for combat
                 messages=[
-                    {"role": "system", "content": self.prompt},  # combat_narrator prompt loaded separately
+                    {"role": "system", "content": self.combat_prompt},
                     {"role": "user", "content": user_msg},
                 ],
                 temperature=0.8,

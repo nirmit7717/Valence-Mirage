@@ -25,6 +25,7 @@ class CombatEngine:
         enemy_tier: int = 1,
         enemy_key: str | None = None,
         narrative_context: str = "",
+        enemy_name_override: str | None = None,
     ) -> CombatState:
         """Create a new combat encounter."""
         # Pick enemy
@@ -48,7 +49,7 @@ class CombatEngine:
 
         # Build enemy combatant from template
         enemy = Combatant(
-            name=template.name,
+            name=enemy_name_override or template.name,
             hp=template.hp,
             max_hp=template.hp,
             armor=template.armor,
@@ -76,6 +77,10 @@ class CombatEngine:
         enemy = combat.enemies[0] if combat.enemies else None
         if not enemy or not player:
             return combat
+            
+        active_effects = [e.name.lower() for e in player.status_effects]
+        if "paralyzed" in active_effects:
+            return self._log(combat, player.name, action.ability_name, "miss", 0, "You are paralyzed and cannot move!")
 
         # Check mana
         if action.mana_cost > 0 and player.mana < action.mana_cost:
@@ -94,12 +99,12 @@ class CombatEngine:
                 return self._log(combat, player.name, "Flee", "failed", 0, "You couldn't escape!")
 
         if action.action_type == CombatActionType.SUPPORT:
-            # Self-buff / heal
-            if action.ability_name.lower() == "heal":
+            # Self-buff / heal / item usage
+            if action.ability_name.lower() == "heal" or "potion" in action.ability_name.lower():
                 heal_amount = self.rng.randint(15, 25)
                 player.hp = min(player.max_hp, player.hp + heal_amount)
-                return self._log(combat, player.name, "Heal", "heal", heal_amount,
-                                 f"You heal for {heal_amount} HP!")
+                return self._log(combat, player.name, action.ability_name, "heal", heal_amount,
+                                 f"You use {action.ability_name} for {heal_amount} HP!")
             # Status effect on self
             if action.status_effect:
                 eff = StatusEffect(name=action.status_effect, duration=action.status_duration)
@@ -119,9 +124,9 @@ class CombatEngine:
         # Roll to hit
         roll = self.rng.randint(1, 20)
         attack_total = roll + player.attack_bonus
-        # Apply player status effect modifiers
-        for eff in player.status_effects:
-            attack_total += eff.stat_modifier.get("strength", 0)
+        
+        if "blinded" in active_effects:
+            attack_total -= 5
 
         # Crit on natural 20
         is_crit = roll == 20
@@ -130,13 +135,23 @@ class CombatEngine:
         if is_miss:
             return self._log(combat, player.name, action.ability_name, "miss", 0, "Your attack misses!")
 
+        enemy_active_effects = [e.name.lower() for e in enemy.status_effects]
+        enemy_armor = enemy.armor
+        if "raged" in enemy_active_effects:
+            enemy_armor -= 2
+
         # Check against enemy armor
-        threshold = 8 + enemy.armor
+        threshold = 8 + enemy_armor
         if attack_total < threshold and not is_crit:
             return self._log(combat, player.name, action.ability_name, "miss", 0, "Your attack glances off their armor!")
 
         # Calculate damage
         damage = roll_damage(action.damage_dice, self.rng) if action.damage_dice else self.rng.randint(1, 6)
+        
+        if "weakened" in active_effects:
+            damage = max(1, damage // 2)
+        if "raged" in active_effects:
+            damage += 3
         if is_crit:
             damage = int(damage * 1.5)
             result = "crit"
@@ -171,6 +186,14 @@ class CombatEngine:
 
         # Tick status effects on enemy
         self._tick_effects(enemy)
+        
+        if enemy.hp <= 0:
+            combat.status = "victory"
+            return self._log(combat, enemy.name, "Death", "defeat", 0, f"{enemy.name} succumbs to its wounds!")
+            
+        active_effects = [e.name.lower() for e in enemy.status_effects]
+        if "paralyzed" in active_effects:
+            return self._log(combat, enemy.name, "Skip", "miss", 0, f"{enemy.name} is paralyzed and cannot move!")
 
         # Simple AI: use abilities if available and hp < 50%, else basic attack
         action_name = "Attack"
@@ -205,6 +228,10 @@ class CombatEngine:
         # Roll to hit
         roll = self.rng.randint(1, 20)
         attack_total = roll + enemy.attack_bonus
+        
+        if "blinded" in active_effects:
+            attack_total -= 5
+
         is_crit = roll == 20
         is_miss = roll == 1
 
@@ -212,22 +239,25 @@ class CombatEngine:
             return self._log(combat, enemy.name, action_name, "miss", 0,
                              f"{enemy.name}'s attack misses!")
 
-        # Apply enemy status modifiers
-        for eff in enemy.status_effects:
-            attack_total += eff.stat_modifier.get("strength", 0)
-
         # Player's effective armor (base + blocking + effects)
         player_armor = player.armor
-        for eff in player.status_effects:
-            player_armor += eff.armor_modifier
+        player_active_effects = [e.name.lower() for e in player.status_effects]
+        if "raged" in player_active_effects:
+            player_armor -= 2
 
         threshold = 8 + player_armor
         if attack_total < threshold and not is_crit:
             return self._log(combat, enemy.name, action_name, "miss", 0,
-                             f"{enemy.name}'s attack glances off your armor!")
+                             f"{enemy.name}'s attack glances off your armor (AC {player_armor})!")
 
         # Damage
         damage = roll_damage(damage_dice, self.rng) if damage_dice else self.rng.randint(1, 6) + int(enemy.attack_bonus)
+        
+        if "weakened" in active_effects:
+            damage = max(1, damage // 2)
+        if "raged" in active_effects:
+            damage += 3
+
         if is_crit:
             damage = int(damage * 1.5)
             result = "crit"
@@ -310,11 +340,25 @@ class CombatEngine:
         expired = []
         for eff in combatant.status_effects:
             eff.duration -= 1
-            # DOT
+            name = eff.name.lower()
+            
+            # Poison
+            if name == "poisoned":
+                dmg = self.rng.randint(1, 4)
+                combatant.hp = max(0, combatant.hp - dmg)
+            
+            # Healing
+            if name == "healing":
+                h = self.rng.randint(2, 6)
+                combatant.hp = min(combatant.max_hp, combatant.hp + h)
+                
+            # Legacy generic DOT
             if eff.damage_per_turn > 0:
                 combatant.hp = max(0, combatant.hp - eff.damage_per_turn)
+                
             if eff.duration <= 0:
                 expired.append(eff)
+                
         for eff in expired:
             combatant.status_effects.remove(eff)
 

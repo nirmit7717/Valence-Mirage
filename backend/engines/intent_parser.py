@@ -9,6 +9,7 @@ from pydantic import ValidationError
 
 from models.action import ActionIntent
 import config
+from tenacity import retry, stop_after_attempt, wait_exponential
 
 logger = logging.getLogger(__name__)
 
@@ -23,6 +24,15 @@ class IntentParser:
         )
         self.system_prompt = PROMPT_PATH.read_text()
 
+    @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=8))
+    async def _safe_chat_completion(self, messages):
+        return await self.client.chat.completions.create(
+            model=config.INTENT_MODEL,
+            messages=messages,
+            temperature=0.1,
+            max_tokens=300,
+        )
+
     async def parse(self, player_input: str, world_context: str, stats_summary: str) -> ActionIntent:
         user_message = (
             f'Player action: "{player_input}"\n'
@@ -30,18 +40,18 @@ class IntentParser:
             f"Player stats: {stats_summary}"
         )
 
-        response = await self.client.chat.completions.create(
-            model=config.INTENT_MODEL,
-            messages=[
-                {"role": "system", "content": self.system_prompt},
-                {"role": "user", "content": user_message},
-            ],
-            temperature=0.1,
-            max_tokens=300,
-        )
-
-        raw = response.choices[0].message.content.strip()
-        logger.debug(f"Intent parser raw output: {raw}")
+        try:
+            response = await self._safe_chat_completion(
+                messages=[
+                    {"role": "system", "content": self.system_prompt},
+                    {"role": "user", "content": user_message},
+                ]
+            )
+            raw = response.choices[0].message.content.strip()
+            logger.debug(f"Intent parser raw output: {raw}")
+        except Exception as e:
+            logger.error(f"Intent parsing API failure: {e}")
+            raw = "{}"
 
         try:
             data = json.loads(raw)

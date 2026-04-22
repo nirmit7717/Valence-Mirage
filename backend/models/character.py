@@ -73,14 +73,14 @@ CLASS_ABILITIES = {
     ],
     CharacterClass.ROGUE: [
         Ability(name="Backstab", description="Strike from the shadows for massive damage",
-                ability_type="attack", damage_dice="3d6+2", mana_cost=0),
+                ability_type="attack", damage_dice="3d6+5", mana_cost=15),
         Ability(name="Dodge", description="Evade the next incoming attack",
                 ability_type="defend", mana_cost=0, status_effect="dodging", status_duration=1),
         Ability(name="Poison Blade", description="Coat your weapon with poison",
                 ability_type="attack", damage_dice="1d6+2", mana_cost=5,
                 status_effect="poisoned", status_duration=3),
         Ability(name="Shadow Step", description="Vanish and reposition",
-                ability_type="support", mana_cost=8, status_effect="hidden", status_duration=2),
+                ability_type="support", mana_cost=10, status_effect="hidden", status_duration=2),
     ],
     CharacterClass.WIZARD: [
         Ability(name="Fireball", description="Hurl a ball of fire at the enemy",

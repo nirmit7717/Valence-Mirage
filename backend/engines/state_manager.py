@@ -21,15 +21,30 @@ XP_REWARDS = {
     "narrative_choice": 5,
 }
 
-# Starting inventory items
-STARTER_ITEMS = [
-    Item(name="Rusty Sword", description="A worn but serviceable blade.", item_type="weapon",
-         stat_bonus={"strength": 1}, usable=False),
-    Item(name="Health Potion", description="Restores 15 HP when consumed.", item_type="consumable",
-         hp_restore=15, usable=True, consumes_on_use=True),
-    Item(name="Mana Potion", description="Restores 15 mana when consumed.", item_type="consumable",
-         mana_restore=15, usable=True, consumes_on_use=True),
-]
+# Starting baseline
+def get_starter_items(char_class: str) -> list[Item]:
+    items = [
+        Item(name="Health Potion", description="Restores 15 HP when consumed.", item_type="consumable",
+             hp_restore=15, usable=True, consumes_on_use=True),
+        Item(name="Mana Potion", description="Restores 15 mana when consumed.", item_type="consumable",
+             mana_restore=15, usable=True, consumes_on_use=True),
+    ]
+    
+    c = char_class.lower()
+    if c == "warrior":
+        items.append(Item(name="Iron Longsword", description="A sturdy battle blade.", item_type="weapon", stat_bonus={"strength": 2}, usable=False))
+    elif c == "rogue":
+        items.append(Item(name="Twin Daggers", description="Sharp and perfectly balanced.", item_type="weapon", stat_bonus={"dexterity": 2}, usable=False))
+    elif c == "wizard":
+        items.append(Item(name="Oak Staff", description="Humming with latent arcane energy.", item_type="weapon", stat_bonus={"intelligence": 2}, usable=False))
+    elif c == "cleric":
+        items.append(Item(name="Holy Mace", description="Blessed by the light.", item_type="weapon", stat_bonus={"wisdom": 2}, usable=False))
+    elif c == "bard":
+        items.append(Item(name="Lute of Embers", description="A beautiful wooden instrument.", item_type="weapon", stat_bonus={"charisma": 2}, usable=False))
+    else:
+        items.append(Item(name="Traveler's Sickle", description="A simple tool for a long road.", item_type="weapon", stat_bonus={"strength": 1}, usable=False))
+        
+    return items
 
 
 class StateManager:
@@ -45,7 +60,8 @@ class StateManager:
             max_hp=config.DEFAULT_HP,
             mana=config.DEFAULT_MANA,
             max_mana=config.DEFAULT_MANA,
-            inventory=deepcopy(STARTER_ITEMS),
+            character_class=player_name.lower() if player_name.lower() in ["warrior", "rogue", "wizard", "cleric", "bard"] else "warrior",
+            inventory=get_starter_items(player_name.lower() if player_name.lower() in ["warrior", "rogue", "wizard", "cleric", "bard"] else "warrior"),
         )
         session = GameSession(player=player)
         self._sessions[session.session_id] = session

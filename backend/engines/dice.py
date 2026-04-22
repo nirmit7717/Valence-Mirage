@@ -39,9 +39,6 @@ class DiceEngine:
             result = "critical_success"
         elif roll >= threshold:
             result = "success"
-        elif roll >= threshold - 2:
-            # Near miss — partial success with consequence
-            result = "partial_success"
         elif roll <= 2:
             # Natural low roll — critical failure
             result = "critical_failure"

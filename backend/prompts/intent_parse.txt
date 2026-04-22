@@ -24,9 +24,9 @@ RULES:
 - uses_resource: true ONLY if the action clearly consumes mana or uses a consumable item
 - resource_cost: Estimated mana cost. 0 if not magical. Scale: minor=5, moderate=10, major=20, extreme=35, cosmic=50
 - requires_roll: CRITICAL FIELD. Is a dice roll needed?
-  - false (NO ROLL) for: choosing between options, answering questions, walking in a direction, picking up mundane items, observing surroundings, routine social conversation, nodding/shaking head, opening an unlocked door, eating/drinking, waiting, any action where failure is meaningless
-  - true (ROLL NEEDED) for: combat, casting spells, physical feats, sneaking past enemies, persuading hostile NPCs, disarming traps, leaping across gaps, any action with real risk of failure or meaningful consequences
-  - When in doubt, ask: "Can this meaningfully fail with consequences?" If no → requires_roll = false
+  - false (NO ROLL) for: World exploration, gathering basic information, having routine conversations, taking safe paths, performing basic tasks, making a narrative decision between distinct paths. If the action is primarily conversational or deciding *where* to go, it does not need a roll.
+  - true (ROLL NEEDED) for: Attempting to bypass a danger, using stealth, engaging in strenuous physical feats, persuading reluctant NPCs, attacking, casting a spell, or interacting with a trap/mechanism.
+  - RULE OF THUMB: If failing the action would realistically result in damage, alert enemies, or lose a critical opportunity, set this to TRUE. Otherwise, set it to FALSE.
 - suggested_choices: ONLY populate if the action is clearly the player choosing from presented options (e.g., "I choose the left path" or "option 1"). Otherwise leave as empty array [].
 
 OUTPUT: JSON object with keys: action_type, description, scale, risk, target, relevant_stat, uses_resource, resource_cost, requires_roll, suggested_choices
