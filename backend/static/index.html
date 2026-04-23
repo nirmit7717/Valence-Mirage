@@ -176,26 +176,36 @@
     <h3>NPCs</h3>
     <div id="sNPCs" style="color:#888;font-size:12px;">None</div>
   </div>
+</div>
 
-  <!-- Combat Overlay -->
-  <div id="combatOverlay" class="combat-overlay-glass" style="display:none;">
-    <div class="combat-arena">
-      <div class="arena-top" id="combatEnemyInfo">
-        <!-- Enemy UI gets injected here -->
-      </div>
-      <div class="arena-bottom" id="combatPlayerInfo">
-        <!-- Player UI gets injected here -->
-      </div>
-      <div class="combat-log-area" id="combatLog">
-        <!-- Logs get injected here -->
-      </div>
-      <div class="combat-controls" id="combatAbilities" style="padding-bottom:10px;">
-        <!-- Abilities get injected here -->
-      </div>
-      <div class="combat-controls" id="combatItems" style="border-top:none; padding-top:0;">
-        <!-- Items get injected here -->
-      </div>
+<!-- Combat Overlay -->
+<div id="combatOverlay" class="combat-overlay-glass" style="display:none;">
+  <div class="combat-arena">
+    <div class="arena-top" id="combatEnemyInfo">
+      <!-- Enemy UI gets injected here -->
     </div>
+    <div class="arena-bottom" id="combatPlayerInfo">
+      <!-- Player UI gets injected here -->
+    </div>
+    <div class="combat-log-area" id="combatLog">
+      <!-- Logs get injected here -->
+    </div>
+    <div class="combat-controls" id="combatAbilities" style="padding-bottom:10px;">
+      <!-- Abilities get injected here -->
+    </div>
+    <div class="combat-controls" id="combatItems" style="border-top:none; padding-top:0;">
+      <!-- Items get injected here -->
+    </div>
+  </div>
+</div>
+
+<!-- Campaign End Overlay -->
+<div class="connect-overlay" id="campaignEndOverlay" style="display:none; z-index: 200;">
+  <div class="connect-box" style="max-width: 450px;">
+    <h2>🏆 Campaign Concluded</h2>
+    <p style="color:#c8a;margin-bottom:16px;font-size:15px;">You have survived the trial and reached the end of this tale.</p>
+    <p id="campaignEndDetails" style="color:#888;font-size:13px;margin-bottom:24px;">Your journey is now a legend.</p>
+    <button onclick="location.reload()">Start a New Adventure</button>
   </div>
 </div>
 
@@ -406,6 +416,10 @@ async function submitAction(actionText) {
             updateCombatUI(data.combat_data);
             addMsg('system', "<strong>⚔️ COMBAT INITIATED!</strong>");
         }, 800); // Slight delay for dramatic effect after reading the narrative ambush
+    } else if (data.campaign_ended) {
+        setTimeout(() => {
+            document.getElementById('campaignEndOverlay').style.display = 'flex';
+        }, 1500);
     }
 
   } catch(e) {
@@ -506,7 +520,10 @@ async function startCombatEncounter(enemyTier = 1, enemyKey = null) {
 }
 
 async function combatUseAbility(abilityName) {
-  if (!sessionId || !inCombat) return;
+  if (!sessionId || !inCombat || busy) return;
+  busy = true;
+  document.getElementById('combatAbilities').style.opacity = '0.5';
+  document.getElementById('combatAbilities').style.pointerEvents = 'none';
   try {
     const params = new URLSearchParams();
     params.set('ability_name', abilityName);
@@ -528,6 +545,9 @@ async function combatUseAbility(abilityName) {
       document.getElementById('hpFill').style.width = (data.player.hp / data.player.max_hp * 100) + '%';
     }
   } catch(e) { alert('Combat action failed: ' + e); }
+  busy = false;
+  document.getElementById('combatAbilities').style.opacity = '1';
+  document.getElementById('combatAbilities').style.pointerEvents = 'auto';
 }
 
 async function combatFlee() {
@@ -578,28 +598,51 @@ function updateCombatUI(data) {
         }
     }
   }
-  // Abilities
-  if (data.abilities) {
-    combatAbilities = data.abilities;
-    document.getElementById('combatAbilities').innerHTML = data.abilities.map(a => {
+  // Initialize Combat State Machine
+  combatStateData = data;
+  renderCombatMainMenu();
+}
+
+let combatStateData = null;
+
+function renderCombatMainMenu() {
+    if (!combatStateData) return;
+    document.getElementById('combatAbilities').innerHTML = `
+      <button class="combat-btn" onclick="renderCombatAttackMenu()">⚔️ Attack</button>
+      <button class="combat-btn" onclick="renderCombatSkillMenu()">✨ Skill</button>
+      <button class="combat-btn" onclick="renderCombatItemsMenu()">🎒 Items</button>
+      <button class="combat-btn" style="background:linear-gradient(to bottom, #311, #100);" onclick="combatFlee()">🏃 Flee</button>
+    `;
+    document.getElementById('combatItems').innerHTML = ''; // Keep items tray empty in 3-menu UI
+}
+
+function renderCombatAttackMenu() {
+    if (!combatStateData || !combatStateData.inventory) return;
+    const weapons = combatStateData.inventory.filter(i => i.type === "weapon");
+    let html = weapons.map(w => `<button class="combat-btn" onclick="combatUseAbility('Attack with ${w.name}')">⚔️ ${w.name}</button>`).join('');
+    if (weapons.length === 0) html = `<div style="grid-column: span 2; text-align: center; color: #555;">No weapons equipped</div>`;
+    html += `<button class="combat-btn" style="background:#222; border-color:#555;" onclick="renderCombatMainMenu()">🔙 Go Back</button>`;
+    document.getElementById('combatAbilities').innerHTML = html;
+}
+
+function renderCombatSkillMenu() {
+    if (!combatStateData || !combatStateData.abilities) return;
+    let html = combatStateData.abilities.map(a => {
       const cost = a.mana_cost ? ` (${a.mana_cost}mp)` : '';
       const dmg = a.damage_dice ? ` ${a.damage_dice}` : '';
       return `<button class="combat-btn" onclick="combatUseAbility('${a.name}')">${a.name}${cost}${dmg}</button>`;
     }).join('');
-  }
-  // Items
-  if (data.inventory) {
-    const consumables = data.inventory.filter(i => i.type === "consumable");
-    if (consumables.length > 0) {
-        document.getElementById('combatItems').innerHTML = consumables.map(i => {
-          return `<button class="combat-btn" style="background:linear-gradient(to bottom, #113, #001);border-color:#226;" onclick="combatUseAbility('Use ${i.name}')">🧪 ${i.name}</button>`;
-        }).join('');
-    } else {
-        document.getElementById('combatItems').innerHTML = `<div style="grid-column: span 2; text-align: center; color: #555; text-transform: uppercase; font-size: 11px;">Backpack is empty...</div>`;
-    }
-  } else {
-    document.getElementById('combatItems').innerHTML = '';
-  }
+    html += `<button class="combat-btn" style="background:#222; border-color:#555;" onclick="renderCombatMainMenu()">🔙 Go Back</button>`;
+    document.getElementById('combatAbilities').innerHTML = html;
+}
+
+function renderCombatItemsMenu() {
+    if (!combatStateData || !combatStateData.inventory) return;
+    const consumables = combatStateData.inventory.filter(i => i.type === "consumable");
+    let html = consumables.map(i => `<button class="combat-btn" style="background:linear-gradient(to bottom, #113, #001);border-color:#226;" onclick="combatUseAbility('Use ${i.name}')">🧪 ${i.name}</button>`).join('');
+    if (consumables.length === 0) html = `<div style="grid-column: span 2; text-align: center; color: #555;">Backpack is empty...</div>`;
+    html += `<button class="combat-btn" style="background:#222; border-color:#555;" onclick="renderCombatMainMenu()">🔙 Go Back</button>`;
+    document.getElementById('combatAbilities').innerHTML = html;
 }
 
 function endCombat(result, rewards, choices) {
