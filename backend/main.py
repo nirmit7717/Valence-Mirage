@@ -614,6 +614,7 @@ async def submit_action(session_id: str, req: ActionRequest):
                         )
                         session.world_state["combat"] = combat.model_dump()
                         combat_started = True
+                        combat_data = combat.model_dump()
                         combat_beat_available = True
                         enemy = combat.enemies[0]
             else:
