@@ -1,4 +1,4 @@
-"""Valence Mirage — FastAPI Game Server (Phase 3: Intelligence)"""
+"""Valence Mirage — FastAPI Game Server (Phase 3.6: Combat Overhaul)"""
 
 import logging
 from contextlib import asynccontextmanager
@@ -53,7 +53,7 @@ async def lifespan(app: FastAPI):
     # Restore in-memory sessions from DB
     await _restore_sessions(app)
 
-    logger.info("Valence Mirage v0.3.0 initialized — engines + DB + vector search + NPCs ready")
+    logger.info("Valence Mirage v0.4.0 initialized — engines + DB + vector search + NPCs + local combat ready")
     yield
 
     # Persist all active sessions before shutdown
@@ -82,7 +82,7 @@ async def _restore_sessions(app):
 app = FastAPI(
     title="Valence Mirage",
     description="AI-powered narrative engine with probabilistic dice mechanics",
-    version="0.3.0",
+    version="0.4.0",
     lifespan=lifespan,
 )
 
@@ -97,7 +97,6 @@ import re
 
 def extract_choices(narration: str) -> list[str]:
     """Extract → prefixed suggestions from narration."""
-    import re
     parts = re.split(r'→|->', narration)
     choices = []
     if len(parts) > 1:
@@ -109,7 +108,6 @@ def extract_choices(narration: str) -> list[str]:
 
 def clean_narration(narration: str) -> str:
     """Remove choice lines from narration for storage."""
-    import re
     parts = re.split(r'→|->', narration)
     return parts[0].strip() if parts else narration.strip()
 
@@ -132,6 +130,16 @@ class ActionRequest(BaseModel):
         self.action = self.action.strip()
         if not self.action:
             raise ValueError("Action cannot be empty")
+
+
+class CombatResolveRequest(BaseModel):
+    """Client sends final combat result after local resolution."""
+    result: str = Field(..., description="victory or defeat")
+    player_hp: int = Field(...)
+    player_mana: int = Field(...)
+    enemy_name: str = Field(...)
+    combat_log: list[dict] = Field(default_factory=list, description="Full combat log entries")
+    turns_taken: int = Field(default=1)
 
 
 class ActionResponse(BaseModel):
@@ -176,7 +184,7 @@ async def root():
 async def health():
     return {
         "name": "Valence Mirage",
-        "version": "0.3.0",
+        "version": "0.4.0",
         "status": "running",
         "active_sessions": len(app.state.state_manager._sessions),
         "db": "connected",
@@ -249,6 +257,11 @@ async def create_session(req: NewSessionRequest = NewSessionRequest()):
 
     # Removed raw NPC generation; NPCs will organically spawn via beats.
     session.world_state["npcs"] = {}
+
+    # Initialize pacing counters
+    session.world_state["turns_since_roll"] = 0
+    session.world_state["turns_since_combat"] = 0
+    session.world_state["turns_in_beat"] = 0
 
     # Generate opening narration
     narrator: Narrator = app.state.narrator
@@ -325,6 +338,30 @@ async def list_sessions():
     return await db.list_sessions()
 
 
+def _is_campaign_complete(bp: CampaignBlueprint) -> bool:
+    """Check if all beats in the campaign template have been completed.
+    
+    Returns True if we're at or past the last beat of the last act.
+    Since advance_beat() won't increment past the final beat, we check
+    if we're ON the final beat (the caller should advance first, then
+    check — but if the final beat was just completed, we detect it here).
+    """
+    if not bp.acts:
+        return True
+    max_act = max(a.act_id for a in bp.acts)
+    last_act = next((a for a in bp.acts if a.act_id == max_act), None)
+    if not last_act or not last_act.beats:
+        return True
+    max_beat = max(b.beat_id for b in last_act.beats)
+    # Past the end, or ON the final beat (advance won't go further)
+    return bp.current_act > max_act or (bp.current_act == max_act and bp.current_beat >= max_beat)
+
+
+def _get_total_beats(bp: CampaignBlueprint) -> int:
+    """Count total beats in the blueprint."""
+    return sum(len(a.beats) for a in bp.acts)
+
+
 @app.post("/session/{session_id}/action", response_model=ActionResponse)
 async def submit_action(session_id: str, req: ActionRequest):
     sm: StateManager = app.state.state_manager
@@ -346,6 +383,9 @@ async def submit_action(session_id: str, req: ActionRequest):
     narrator: Narrator = app.state.narrator
     npc_engine: NPCEngine = app.state.npc_engine
 
+    # If campaign has ended, reject further actions
+    if session.world_state.get("campaign_ended", False):
+        raise HTTPException(status_code=400, detail="Campaign has ended. Start a new adventure.")
 
     stats_summary = (
         f"STR={session.player.stats.strength} "
@@ -375,8 +415,9 @@ async def submit_action(session_id: str, req: ActionRequest):
         session.world_state["current_act"] = bp.acts[0].act_id if bp.acts else 1
         session.world_state["current_beat"] = bp.acts[0].beats[0].beat_id if bp.acts and bp.acts[0].beats else 1
 
-    # Track pacing
+    # Track pacing — two independent counters
     turns_since_roll = session.world_state.get("turns_since_roll", 0)
+    turns_since_combat = session.world_state.get("turns_since_combat", 0)
     turns_in_beat = session.world_state.get("turns_in_beat", 0)
 
     # 1. Intent Parsing
@@ -432,10 +473,11 @@ async def submit_action(session_id: str, req: ActionRequest):
     # 2. Check if roll is needed
     if not intent.requires_roll:
         turns_since_roll += 1
+        turns_since_combat += 1
         turns_in_beat += 1
         
-        # Force encounter/roll if pacing demands it
-        if turns_since_roll >= 4:
+        # Force a probabilistic roll if 3 narrative turns have passed
+        if turns_since_roll >= 3:
             intent.requires_roll = True
             intent.action_type = "Forced Encounter"
             intent.description = f"While attempting to {intent.description}, a sudden event disrupts the peace!"
@@ -444,11 +486,119 @@ async def submit_action(session_id: str, req: ActionRequest):
             
     else:
         turns_since_roll = 0
+        turns_since_combat += 1
         turns_in_beat += 1
-        
+
     session.world_state["turns_since_roll"] = turns_since_roll
+    session.world_state["turns_since_combat"] = turns_since_combat
     session.world_state["turns_in_beat"] = turns_in_beat
 
+    # ─── Check if forced combat should trigger (every 5 narrative turns) ───
+    # This fires BEFORE the main roll/narration logic so combat overlay appears immediately
+    if turns_since_combat >= 5 and not session.world_state.get("combat"):
+        session.world_state["turns_since_combat"] = 0
+        combat_engine: CombatEngine = app.state.combat_engine
+        
+        # Determine enemy tier based on player level
+        enemy_tier = min(5, max(1, session.player.level))
+        
+        combat = combat_engine.initiate_combat(
+            player_state=session.player,
+            enemy_tier=enemy_tier,
+            narrative_context=session.world_state.get("situation", "")[:200],
+        )
+        session.world_state["combat"] = combat.model_dump()
+        
+        enemy = combat.enemies[0]
+        player_armor = combat_engine._calc_player_armor(session.player)
+        attack_bonus = combat_engine._calc_attack_bonus(session.player)
+        
+        # Build combat_data for client-side resolution
+        combat_data = {
+            "combat_id": combat.combat_id,
+            "enemy": {
+                "name": enemy.name,
+                "hp": enemy.hp,
+                "max_hp": enemy.max_hp,
+                "armor": enemy.armor,
+                "attack_bonus": enemy.attack_bonus,
+                "abilities": enemy.abilities,
+            },
+            "player": {
+                "name": session.player.name,
+                "hp": session.player.hp,
+                "max_hp": session.player.max_hp,
+                "mana": session.player.mana,
+                "max_mana": session.player.max_mana,
+                "armor": player_armor,
+                "attack_bonus": attack_bonus,
+                "status_effects": [],
+            },
+            "abilities": session.world_state.get("abilities", []),
+            "inventory": [{"name": i.name, "type": i.item_type, "hp_restore": getattr(i, "hp_restore", 0), "mana_restore": getattr(i, "mana_restore", 0)} for i in session.player.inventory],
+            "enemy_tier": enemy_tier,
+        }
+
+        # Generate a quick ambush narration
+        try:
+            narration = await narrator.narrate_combat_action(
+                action_description=f"The player is suddenly ambushed by a {enemy.name}! Describe the ambush in 2-3 sentences. Be dramatic and visceral. Do not include choices.",
+                result="ambush",
+                character_class=session.player.character_class,
+            )
+        except Exception:
+            narration = f"A {enemy.name} leaps from the shadows! Prepare for battle!"
+        
+        # Always return when forced combat triggers — combat takes priority
+        # The narration above (ambush scene) is what the player sees
+        session.world_state["situation"] = narration
+        session.turn_number += 1
+        level_up = sm.apply_changes(session, intent, StateChanges(), "narrative_choice")
+
+        turn = Turn(
+            turn_number=session.turn_number,
+            player_input=req.action,
+            intent=intent,
+            score=None,
+            roll=0,
+            outcome=Outcome(
+                result="narrative_choice",
+                roll=0,
+                threshold=0,
+                narration=narration,
+                state_changes=StateChanges(),
+            ),
+        )
+        session.turn_history.append(turn)
+        await db.save_turn(session_id, turn)
+        await db.save_session(session)
+
+        return ActionResponse(
+            turn_number=session.turn_number,
+            intent=intent,
+            requires_roll=False,
+            outcome="narrative_choice",
+            narration=clean_narration(narration),
+            state_changes=StateChanges(),
+            player_hp=session.player.hp,
+            player_mana=session.player.mana,
+            player_level=session.player.level,
+            player_xp=session.player.xp,
+            player_xp_to_next=session.player.xp_to_next,
+            max_hp=session.player.max_hp,
+            max_mana=session.player.max_mana,
+            inventory=[{"name": i.name, "type": i.item_type} for i in session.player.inventory],
+            level_up=level_up,
+            current_beat=current_beat_title,
+            npc_dialogue=npc_dialogue,
+            npcs=[{"name": n.get("personality",{}).get("name","?"), "role": n.get("personality",{}).get("role","?"), "disposition": n.get("disposition",0)} for n in session.world_state.get("npcs", {}).values()],
+            choices=[],
+            combat_started=True,
+            combat_data=combat_data,
+            campaign_ended=False,
+        )
+
+    # ─── No-roll path (narrative choice) ───
     if not intent.requires_roll:
         try:
             narration = await narrator.narrate(
@@ -460,7 +610,7 @@ async def submit_action(session_id: str, req: ActionRequest):
                 world_state=session.world_state,
                 npc_dialogue=npc_dialogue,
                 turn_history=session.turn_history,
-                )
+            )
         except Exception as e:
             logger.error(f"No-roll narration failed: {e}", exc_info=True)
             narration = f"You {intent.description}. The world shifts around you."
@@ -473,16 +623,14 @@ async def submit_action(session_id: str, req: ActionRequest):
             bp = CampaignBlueprint(**campaign_data)
             beat = planner.get_current_beat(bp)
             if beat:
-                # Beat Lock Logic for narrative choices
+                # Beat advancement for narrative choices
                 if beat.type != "combat":
                     if intent.action_type == "choice" or intent.scale in ["moderate", "major", "extreme", "cosmic"] or turns_in_beat >= 4:
-                        # Check if this is the end
-                        max_act = max([a.act_id for a in bp.acts])
-                        max_beat = max([b.beat_id for b in bp.acts[-1].beats])
-                        if bp.current_act == max_act and bp.current_beat == max_beat:
+                        bp_adv = planner.advance_beat(bp)
+                        if bp_adv.current_act == bp.current_act and bp_adv.current_beat == bp.current_beat and _is_campaign_complete(bp):
                             session.world_state["campaign_ended"] = True
                         else:
-                            bp = planner.advance_beat(bp)
+                            bp = bp_adv
                             session.world_state["campaign"] = bp.model_dump()
                             beat = planner.get_current_beat(bp)
                             session.world_state["turns_in_beat"] = 0
@@ -533,6 +681,8 @@ async def submit_action(session_id: str, req: ActionRequest):
             campaign_ended=session.world_state.get("campaign_ended", False),
         )
 
+    # ─── Roll path (probabilistic action) ───
+
     # 3. Vector similarity for probability scoring
     similarity = 0.5  # Default
     try:
@@ -580,7 +730,7 @@ async def submit_action(session_id: str, req: ActionRequest):
     session.world_state["situation"] = narration
     session.turn_number += 1
 
-    # 11. Advance story beat (CONDITIONAL)
+    # 11. Advance story beat & check for combat triggers
     combat_started = False
     combat_data = None
     if campaign_data:
@@ -589,7 +739,7 @@ async def submit_action(session_id: str, req: ActionRequest):
         
         if beat:
             if beat.type == "combat":
-                # Auto-ambush
+                # Auto-ambush from beat type
                 if outcome_result in ["success", "critical_success", "partial_success"] or narrative_bonus > 0.0:
                     if not session.world_state.get("combat"):
                         enemy_name = None
@@ -607,25 +757,57 @@ async def submit_action(session_id: str, req: ActionRequest):
                         except Exception as e:
                             logger.warning(f"Failed to extract enemy name: {e}")
                         
-                        combat = app.state.combat_engine.initiate_combat(
+                        combat_engine_local: CombatEngine = app.state.combat_engine
+                        enemy_tier = min(5, max(1, session.player.level))
+                        combat = combat_engine_local.initiate_combat(
                             player_state=session.player, 
                             narrative_context=narration[-200:],
-                            enemy_name_override=enemy_name
+                            enemy_name_override=enemy_name,
+                            enemy_tier=enemy_tier,
                         )
                         session.world_state["combat"] = combat.model_dump()
                         combat_started = True
                         combat_data = combat.model_dump()
                         combat_beat_available = True
                         enemy = combat.enemies[0]
+                        
+                        player_armor = combat_engine_local._calc_player_armor(session.player)
+                        attack_bonus = combat_engine_local._calc_attack_bonus(session.player)
+                        
+                        combat_data = {
+                            "combat_id": combat.combat_id,
+                            "enemy": {
+                                "name": enemy.name,
+                                "hp": enemy.hp,
+                                "max_hp": enemy.max_hp,
+                                "armor": enemy.armor,
+                                "attack_bonus": enemy.attack_bonus,
+                                "abilities": enemy.abilities,
+                            },
+                            "player": {
+                                "name": session.player.name,
+                                "hp": session.player.hp,
+                                "max_hp": session.player.max_hp,
+                                "mana": session.player.mana,
+                                "max_mana": session.player.max_mana,
+                                "armor": player_armor,
+                                "attack_bonus": attack_bonus,
+                                "status_effects": [],
+                            },
+                            "abilities": session.world_state.get("abilities", []),
+                            "inventory": [{"name": i.name, "type": i.item_type, "hp_restore": getattr(i, "hp_restore", 0), "mana_restore": getattr(i, "mana_restore", 0)} for i in session.player.inventory],
+                            "enemy_tier": enemy_tier,
+                        }
+                        session.world_state["turns_since_combat"] = 0
             else:
                 # Advance if successfully addressed or max pacing reached
                 if outcome_result in ["success", "critical_success", "partial_success"] or narrative_bonus > 0.0 or turns_in_beat >= 4:
-                    max_act = max([a.act_id for a in bp.acts])
-                    max_beat = max([b.beat_id for b in bp.acts[-1].beats])
-                    if bp.current_act == max_act and bp.current_beat == max_beat:
+                    bp_adv = planner.advance_beat(bp)
+                    # If advance didn't move (we're on the last beat), campaign is complete
+                    if bp_adv.current_act == bp.current_act and bp_adv.current_beat == bp.current_beat and _is_campaign_complete(bp):
                         session.world_state["campaign_ended"] = True
                     else:
-                        bp = planner.advance_beat(bp)
+                        bp = bp_adv
                         session.world_state["campaign"] = bp.model_dump()
                         beat = planner.get_current_beat(bp)
                         session.world_state["turns_in_beat"] = 0
@@ -689,11 +871,11 @@ async def submit_action(session_id: str, req: ActionRequest):
     )
 
 
-# ─── Combat Endpoints ───
+# ─── Combat Endpoints (Client-Side Resolution) ───
 
-@app.post("/session/{session_id}/combat/start")
-async def start_combat(session_id: str, enemy_tier: int = 1, enemy_key: str | None = None):
-    """Initiate a combat encounter."""
+@app.post("/session/{session_id}/combat/init")
+async def init_combat(session_id: str, enemy_tier: int = 1, enemy_key: str | None = None):
+    """Initiate a combat encounter. Returns all data for client-side resolution."""
     sm: StateManager = app.state.state_manager
     db: Database = app.state.db
     combat_engine: CombatEngine = app.state.combat_engine
@@ -705,33 +887,63 @@ async def start_combat(session_id: str, enemy_tier: int = 1, enemy_key: str | No
             raise HTTPException(status_code=404, detail="Session not found")
 
     context = session.world_state.get("situation", "")[:200]
+    
+    # Tier scales with player level
+    effective_tier = min(5, max(1, enemy_tier))
+    
     combat = combat_engine.initiate_combat(
         player_state=session.player,
-        enemy_tier=enemy_tier,
+        enemy_tier=effective_tier,
         enemy_key=enemy_key,
         narrative_context=context,
     )
     session.world_state["combat"] = combat.model_dump()
+    session.world_state["turns_since_combat"] = 0
+    
     await db.save_session(session)
 
     enemy = combat.enemies[0]
+    player_armor = combat_engine._calc_player_armor(session.player)
+    attack_bonus = combat_engine._calc_attack_bonus(session.player)
+
     return {
         "combat_id": combat.combat_id,
-        "enemy": {"name": enemy.name, "hp": enemy.hp, "max_hp": enemy.max_hp, "armor": enemy.armor},
-        "player": {"hp": combat.player.hp, "max_hp": combat.player.max_hp, "mana": combat.player.mana, "max_mana": combat.player.max_mana},
-        "turn": combat.turn_number,
-        "status": combat.status,
+        "enemy": {
+            "name": enemy.name,
+            "hp": enemy.hp,
+            "max_hp": enemy.max_hp,
+            "armor": enemy.armor,
+            "attack_bonus": enemy.attack_bonus,
+            "abilities": enemy.abilities,
+        },
+        "player": {
+            "name": session.player.name,
+            "hp": combat.player.hp,
+            "max_hp": combat.player.max_hp,
+            "mana": combat.player.mana,
+            "max_mana": combat.player.max_mana,
+            "armor": player_armor,
+            "attack_bonus": attack_bonus,
+            "status_effects": [],
+        },
+        "abilities": session.world_state.get("abilities", []),
+        "inventory": [{"name": i.name, "type": i.item_type, "hp_restore": getattr(i, "hp_restore", 0), "mana_restore": getattr(i, "mana_restore", 0)} for i in session.player.inventory],
+        "enemy_tier": effective_tier,
         "message": f"A {enemy.name} appears! Prepare for battle!",
     }
 
 
-@app.post("/session/{session_id}/combat/action")
-async def combat_action(session_id: str, ability_name: str = "Attack", target: str = ""):
-    """Execute a player combat action."""
+@app.post("/session/{session_id}/combat/resolve")
+async def resolve_combat(session_id: str, req: CombatResolveRequest):
+    """Accept final combat result from client-side resolution.
+    
+    The client runs the entire combat locally (dice, damage, AI, effects).
+    This endpoint handles: XP, loot, HP/mana sync, beat advancement, and narration.
+    """
     sm: StateManager = app.state.state_manager
     db: Database = app.state.db
-    combat_engine: CombatEngine = app.state.combat_engine
     narrator: Narrator = app.state.narrator
+    combat_engine: CombatEngine = app.state.combat_engine
 
     session = sm.get_session(session_id)
     if not session:
@@ -739,148 +951,99 @@ async def combat_action(session_id: str, ability_name: str = "Attack", target: s
         if not session:
             raise HTTPException(status_code=404, detail="Session not found")
 
-    combat_data = session.world_state.get("combat")
-    if not combat_data:
-        raise HTTPException(status_code=400, detail="No active combat")
-    combat = CombatState(**combat_data)
-    if combat.status != "active":
-        raise HTTPException(status_code=400, detail=f"Combat is {combat.status}")
+    # Sync player HP/mana from combat
+    session.player.hp = max(0, min(session.player.max_hp, req.player_hp))
+    session.player.mana = max(0, min(session.player.max_mana, req.player_mana))
 
-    # Find the ability or item
-    abilities = session.world_state.get("abilities", [])
-    chosen = None
-    is_item = False
-    is_weapon = False
-    parsed_ability_name = ability_name
-    
-    if ability_name.startswith("Use "):
-        parsed_ability_name = ability_name[4:]
-        is_item = True
-    elif ability_name.startswith("Attack with "):
-        parsed_ability_name = ability_name[12:]
-        is_weapon = True
-
-    if is_item or is_weapon:
-        for item in session.player.inventory:
-            if item.name.lower() == parsed_ability_name.lower():
-                chosen = {"name": item.name, "ability_type": "support" if is_item else "attack", "damage_dice": "1d8" if is_weapon else None}
-                break
-    else:
-        for a in abilities:
-            if a["name"].lower() == ability_name.lower():
-                chosen = a
-                break
-
-    # Determine action type
-    if ability_name.lower() == "flee":
-        action_type = CombatActionType.FLEE
-    elif chosen:
-        atype = chosen.get("ability_type", "attack")
-        action_type = CombatActionType(atype) if atype in [e.value for e in CombatActionType] else CombatActionType.ATTACK
-    else:
-        action_type = CombatActionType.ATTACK
-
-    action = CombatAction(
-        actor="player",
-        action_type=action_type,
-        ability_name=parsed_ability_name,
-        damage_dice=chosen.get("damage_dice", "1d6") if chosen else "1d6",
-        mana_cost=chosen.get("mana_cost", 0) if chosen else 0,
-        status_effect=chosen.get("status_effect") if chosen else None,
-        status_duration=chosen.get("status_duration", 0) if chosen else 0,
-        target=target or (combat.enemies[0].name if combat.enemies else ""),
-    )
-
-
-    # Tick player effects
-    combat = combat_engine.tick_player_effects(combat)
-
-    # Resolve player action
-    combat = combat_engine.resolve_player_action(combat, action)
-    player_log = combat.log[-1].message if combat.log else ""
-
-    # Enemy turn if combat still active
-    enemy_log = ""
-    if combat.status == "active":
-        combat = combat_engine.resolve_enemy_action(combat)
-        enemy_log = combat.log[-1].message if combat.log else ""
-
-    combat.turn_number += 1
-
-    # Combat narration
+    rewards = {"xp": 0, "items": [], "loot_descriptions": []}
     narration = ""
-    full_action = f"{player_log} {enemy_log}".strip()
-    
-    if combat.status in ["victory", "defeat"]:
+    choices = []
+
+    if req.result == "victory":
+        # Calculate rewards using enemy name lookup
+        from data.enemies import ENEMY_TEMPLATES, roll_loot
+        enemy_key = next((k for k, v in ENEMY_TEMPLATES.items() if v.name == req.enemy_name), None)
+        if enemy_key:
+            template = ENEMY_TEMPLATES[enemy_key]
+            rewards["xp"] = template.xp_reward
+            loot = roll_loot(template)
+            for entry in loot:
+                item = Item(
+                    name=entry["name"],
+                    item_type=entry.get("type", "misc"),
+                    description=f"Looted from {req.enemy_name}",
+                    stat_bonus=entry.get("stat_bonus", {}),
+                    hp_restore=entry.get("hp_restore", 0),
+                    mana_restore=entry.get("mana_restore", 0),
+                )
+                rewards["items"].append(item)
+                rewards["loot_descriptions"].append(f"Found: {entry['name']}")
+            session.player.inventory.extend(rewards["items"])
+        
+        session.player.gain_xp(rewards["xp"])
+
+        # Generate post-combat narration
+        log_summary = "; ".join([f"{e.get('actor','')}: {e.get('message','')}" for e in req.combat_log[-4:]])
         try:
             narration = await narrator.narrate_combat_action(
-                action_description=f"The battle against the enemy has ended in {combat.status}. {full_action}. Describe the immediate aftermath briefly and provide exactly 3 actionable exploration choices using the format:\n→ [action 1]\n→ [action 2]\n→ [action 3]",
-                result=combat.status,
+                action_description=f"The player has defeated a {req.enemy_name} in combat after {req.turns_taken} turns. Key moments: {log_summary}. Describe the aftermath briefly and provide 3 exploration choices:\n→ [action 1]\n→ [action 2]\n→ [action 3]",
+                result="victory",
                 character_class=session.player.character_class,
             )
         except Exception:
-            narration = f"{full_action}\nThe battle is over. Describe your next action."
-        # Push back to world state
+            narration = f"The {req.enemy_name} falls. The battle is won."
+        
+        choices = extract_choices(narration)
         session.world_state["situation"] = narration
-    else:
-        # User requested no detailed generation during combat to reduce verbosity, UI logs handle the details.
-        narration = ""
 
-    # Handle combat end
-    rewards = {"xp": 0, "items": [], "loot_descriptions": []}
-    if combat.status in ("victory", "defeat"):
-        if combat.status == "victory":
-            rewards = combat_engine.get_combat_rewards(combat)
-            session.player.gain_xp(rewards["xp"])
-            for item in rewards["items"]:
-                session.player.inventory.append(item)
-            
-            # ADVANCE BEAT ON VICTORY
-            campaign_data = session.world_state.get("campaign")
-            if campaign_data:
-                planner = app.state.campaign_planner
-                bp = CampaignBlueprint(**campaign_data)
-                bp = planner.advance_beat(bp)
+        # Advance beat on victory
+        campaign_data = session.world_state.get("campaign")
+        if campaign_data:
+            planner = app.state.campaign_planner
+            bp = CampaignBlueprint(**campaign_data)
+            bp_adv = planner.advance_beat(bp)
+            if bp_adv.current_act == bp.current_act and bp_adv.current_beat == bp.current_beat and _is_campaign_complete(bp):
+                session.world_state["campaign_ended"] = True
+            else:
+                bp = bp_adv
                 session.world_state["campaign"] = bp.model_dump()
-        # Sync combat HP back to player
-        if combat.player:
-            session.player.hp = combat.player.hp
-            session.player.mana = combat.player.mana
-        session.world_state.pop("combat", None)
-    else:
-        # Sync HP/mana mid-combat
-        if combat.player:
-            session.player.hp = combat.player.hp
-            session.player.mana = combat.player.mana
-        session.world_state["combat"] = combat.model_dump()
 
+    elif req.result == "defeat":
+        try:
+            narration = await narrator.narrate_combat_action(
+                action_description=f"The player has been defeated by a {req.enemy_name}. Describe the bitter aftermath. The player barely survives with {req.player_hp} HP remaining.",
+                result="defeat",
+                character_class=session.player.character_class,
+            )
+        except Exception:
+            narration = f"The {req.enemy_name} overwhelms you. Darkness takes hold..."
+        
+        choices = extract_choices(narration)
+        session.world_state["situation"] = narration
+
+    # Clean up combat state
+    session.world_state.pop("combat", None)
     await db.save_session(session)
 
-    # Build enemy info
-    enemy_info = None
-    if combat.enemies:
-        e = combat.enemies[0]
-        enemy_info = {"name": e.name, "hp": e.hp, "max_hp": e.max_hp,
-                      "armor": e.armor, "status_effects": [se.name for se in e.status_effects]}
-
-    choices = []
-    if narration and ("→" in narration or "-" in narration):
-        choices = extract_choices(narration)
+    # Check level up
+    level_up = {}
+    # XP was already applied via gain_xp, check if level changed
+    # (gain_xp handles level ups internally)
 
     return {
+        "result": req.result,
         "narration": narration,
-        "player_log": player_log,
-        "enemy_log": enemy_log,
-        "combat_status": combat.status,
-        "enemy": enemy_info,
-        "player": {"hp": session.player.hp, "max_hp": session.player.max_hp,
-                    "mana": session.player.mana, "max_mana": session.player.max_mana,
-                    "status_effects": [se.name for se in combat.player.status_effects] if combat.player else []},
-        "turn": combat.turn_number,
         "rewards": rewards,
-        "abilities": abilities,
-        "inventory": [{"name": i.name, "description": i.description, "type": i.item_type} for i in session.player.inventory],
         "choices": choices,
+        "player_hp": session.player.hp,
+        "player_mana": session.player.mana,
+        "player_level": session.player.level,
+        "player_xp": session.player.xp,
+        "player_xp_to_next": session.player.xp_to_next,
+        "max_hp": session.player.max_hp,
+        "max_mana": session.player.max_mana,
+        "inventory": [{"name": i.name, "type": i.item_type} for i in session.player.inventory],
+        "campaign_ended": session.world_state.get("campaign_ended", False),
     }
 
 

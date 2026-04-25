@@ -25,7 +25,7 @@
   .dice-badge.choice { background: #2a2a3a; color: #99f; }
   .msg .beat-tag { display: inline-block; background: #2a1a3a; color: #c8a; padding: 2px 8px; border-radius: 4px; font-size: 11px; margin-left: 4px; }
   .choices-box { margin-top: 8px; display: flex; flex-direction: column; gap: 4px; }
-  .choice-btn { background: #1a1a3e; border: 1px solid #3a3a6a; border-radius: 4px; padding: 6px 12px; color: #aac; font-size: 13px; cursor: pointer; text-align: left; }
+  .choice-btn { background: #1a1a3e; border: 1px solid #3a3a6a; border-radius: 4px; padding: 6px 12px; color: #aac; font-size: 13px; cursor: pointer; text-align: left; transition: all 0.2s; }
   .choice-btn:hover { background: #2a2a4e; border-color: #c9a84c; color: #e0d8c8; }
   .sidebar { grid-column: 2; grid-row: 2 / 4; background: #0f0f18; border-left: 1px solid #2a2a4a; padding: 16px; overflow-y: auto; font-size: 13px; }
   .sidebar h3 { color: #c9a84c; font-size: 12px; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 10px; margin-top: 16px; }
@@ -63,33 +63,248 @@
   ::-webkit-scrollbar-track { background: transparent; }
   ::-webkit-scrollbar-thumb { background: #2a2a4a; border-radius: 3px; }
 
-  /* Combat UI Overhaul */
-  .combat-overlay-glass { position: fixed; inset: 0; background: rgba(25, 5, 5, 0.85); backdrop-filter: blur(8px); display: flex; align-items: center; justify-content: center; z-index: 100; }
-  .combat-arena { width: 100%; max-width: 650px; height: 500px; background: linear-gradient(to bottom, #1a0505, #000); border: 2px solid #801010; border-radius: 12px; box-shadow: 0 0 30px rgba(200, 0, 0, 0.4); display: grid; grid-template-rows: auto auto 1fr auto; position: relative; overflow: hidden; }
-  .arena-top { display: flex; justify-content: flex-end; padding: 24px; }
-  .arena-bottom { display: flex; justify-content: flex-start; padding: 24px; margin-top: -20px; }
-  .combat-entity { position: relative; background: rgba(10, 0, 0, 0.8); border: 1px solid #400; padding: 12px 20px; border-radius: 8px; box-shadow: 0 4px 15px rgba(0,0,0,0.5); border-left: 4px solid #800; min-width: 220px; z-index: 1; }
-  .combat-entity::after { content: "👹"; position: absolute; font-size: 80px; opacity: 0.15; right: 10px; top: 0px; z-index: -1; }
-  .combat-entity.player { border-left: 4px solid #080; border-right: none; }
-  .combat-entity.player::after { content: "🥷"; left: 10px; right: auto; transform: scaleX(-1); }
-  .combat-entity h3 { color: #f44; font-size: 16px; margin-bottom: 4px; text-shadow: 0 0 5px rgba(255,0,0,0.5); text-transform: uppercase; letter-spacing: 1px; }
-  .combat-entity.player h3 { color: #4f4; text-shadow: 0 0 5px rgba(0,255,0,0.5); }
-  .combat-entity .hp-text { color: #aaa; font-size: 12px; text-align: right; margin-top: 4px; font-family: monospace; }
-  .hp-bar-bg { height: 8px; background: #200; border-radius: 4px; overflow: hidden; margin: 4px 0; border: 1px solid #400; }
-  .hp-bar-fill { height: 100%; background: linear-gradient(90deg, #800, #f00); border-radius: 4px; transition: width 0.4s cubic-bezier(0.4, 0, 0.2, 1); box-shadow: 0 0 10px rgba(255,0,0,0.5); }
-  .combat-entity.player .hp-bar-bg { background: #020; border-color: #040; }
-  .combat-entity.player .hp-bar-fill { background: linear-gradient(90deg, #080, #0f0); box-shadow: 0 0 10px rgba(0,255,0,0.5); }
-  
-  .combat-log-area { padding: 10px 30px; display: flex; flex-direction: column-reverse; font-size: 14px; overflow-y: auto; text-shadow: 0 0 3px #000; border-top: 1px solid rgba(255,0,0,0.1); margin-top: 10px; }
-  .combat-log-entry { margin-bottom: 8px; animation: popIn 0.3s ease-out forwards; }
-  
-  .combat-controls { background: rgba(20, 0, 0, 0.9); border-top: 1px solid #400; padding: 20px; display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
-  .combat-btn { background: linear-gradient(to bottom, #300, #100); border: 1px solid #800; color: #f88; padding: 14px; border-radius: 6px; cursor: pointer; font-weight: bold; font-size: 15px; text-transform: uppercase; transition: all 0.2s; box-shadow: 0 2px 5px rgba(0,0,0,0.5); text-align: center; }
-  .combat-btn:hover { background: linear-gradient(to bottom, #500, #200); border-color: #f00; color: #fff; box-shadow: 0 0 10px rgba(255,0,0,0.5); transform: translateY(-1px); }
-  
-  @keyframes popIn { 0% { opacity: 0; transform: translateY(10px) scale(0.95); } 100% { opacity: 1; transform: translateY(0) scale(1); } }
-  .hit-anim { animation: pulseHit 0.3s ease-in-out; }
-  @keyframes pulseHit { 0% { opacity: 1; } 50% { opacity: 0.5; filter: brightness(2) saturate(2); transform: scale(0.98); } 100% { opacity: 1; } }
+  /* ─── Combat UI — Expedition 33 Style ─── */
+  .combat-overlay-glass {
+    position: fixed; inset: 0;
+    background: rgba(25, 5, 5, 0.92);
+    backdrop-filter: blur(12px);
+    display: flex; align-items: center; justify-content: center;
+    z-index: 150;
+    animation: combatFadeIn 0.4s ease-out;
+  }
+  @keyframes combatFadeIn { from { opacity: 0; } to { opacity: 1; } }
+
+  .combat-arena {
+    width: 100%; max-width: 720px; height: 560px;
+    background: linear-gradient(180deg, #0d0404 0%, #000 100%);
+    border: 2px solid #801010;
+    border-radius: 16px;
+    box-shadow: 0 0 60px rgba(200, 0, 0, 0.3), inset 0 0 40px rgba(0,0,0,0.5);
+    display: grid;
+    grid-template-rows: auto auto 1fr auto;
+    position: relative;
+    overflow: hidden;
+  }
+
+  /* Entity cards */
+  .arena-top { display: flex; justify-content: flex-end; padding: 20px 24px 8px; }
+  .arena-bottom { display: flex; justify-content: flex-start; padding: 8px 24px 12px; }
+
+  .combat-entity {
+    position: relative;
+    background: rgba(10, 0, 0, 0.85);
+    border: 1px solid #400;
+    padding: 10px 16px;
+    border-radius: 8px;
+    box-shadow: 0 4px 15px rgba(0,0,0,0.5);
+    min-width: 240px;
+    z-index: 1;
+    transition: all 0.3s;
+  }
+  .combat-entity.enemy-entity { border-left: 4px solid #800; }
+  .combat-entity.player-entity { border-left: 4px solid #080; }
+
+  .combat-entity .entity-icon {
+    position: absolute; font-size: 64px; opacity: 0.12; right: 8px; top: -8px; z-index: -1;
+    pointer-events: none;
+  }
+  .combat-entity.player-entity .entity-icon { left: 8px; right: auto; }
+
+  .combat-entity h3 {
+    font-size: 15px; margin-bottom: 4px;
+    text-transform: uppercase; letter-spacing: 1px;
+  }
+  .combat-entity.enemy-entity h3 { color: #f44; text-shadow: 0 0 6px rgba(255,0,0,0.4); }
+  .combat-entity.player-entity h3 { color: #4f4; text-shadow: 0 0 6px rgba(0,255,0,0.4); }
+
+  .combat-entity .hp-text {
+    color: #aaa; font-size: 11px; text-align: right; margin-top: 3px; font-family: monospace;
+  }
+
+  .hp-bar-bg {
+    height: 8px; border-radius: 4px; overflow: hidden; margin: 4px 0;
+  }
+  .enemy-entity .hp-bar-bg { background: #200; border: 1px solid #400; }
+  .player-entity .hp-bar-bg { background: #020; border: 1px solid #040; }
+
+  .hp-bar-fill {
+    height: 100%; border-radius: 4px;
+    transition: width 0.4s cubic-bezier(0.4, 0, 0.2, 1);
+  }
+  .enemy-entity .hp-bar-fill { background: linear-gradient(90deg, #800, #f00); box-shadow: 0 0 8px rgba(255,0,0,0.4); }
+  .player-entity .hp-bar-fill { background: linear-gradient(90deg, #080, #0f0); box-shadow: 0 0 8px rgba(0,255,0,0.4); }
+
+  .status-effects-row {
+    margin-top: 4px; display: flex; gap: 4px; flex-wrap: wrap;
+  }
+  .status-pill {
+    font-size: 10px; padding: 1px 6px; border-radius: 3px;
+    background: rgba(100,50,50,0.4); color: #daa; border: 1px solid #533;
+  }
+  .player-entity .status-pill { background: rgba(50,100,50,0.4); color: #ada; border-color: #353; }
+
+  /* Combat log */
+  .combat-log-area {
+    padding: 8px 24px;
+    display: flex; flex-direction: column-reverse;
+    font-size: 13px;
+    overflow-y: auto;
+    border-top: 1px solid rgba(255,0,0,0.08);
+    text-shadow: 0 0 3px #000;
+  }
+  .combat-log-entry {
+    margin-bottom: 6px;
+    animation: logSlide 0.25s ease-out;
+  }
+  .combat-log-entry.player-log { color: #8c8; }
+  .combat-log-entry.enemy-log { color: #c88; }
+  .combat-log-entry.system-log { color: #88c; font-style: italic; }
+  .combat-log-entry.crit-log { color: #ff4; font-weight: bold; }
+
+  @keyframes logSlide {
+    from { opacity: 0; transform: translateY(8px); }
+    to { opacity: 1; transform: translateY(0); }
+  }
+
+  /* Combat controls — three-tier menu */
+  .combat-controls {
+    background: rgba(15, 0, 0, 0.95);
+    border-top: 1px solid #400;
+    padding: 16px 20px;
+    min-height: 100px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  .menu-tier {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+    gap: 8px;
+  }
+
+  .combat-btn {
+    background: linear-gradient(to bottom, #300, #100);
+    border: 1px solid #800;
+    color: #f88;
+    padding: 12px 8px;
+    border-radius: 6px;
+    cursor: pointer;
+    font-weight: bold;
+    font-size: 14px;
+    text-transform: uppercase;
+    transition: all 0.15s;
+    box-shadow: 0 2px 5px rgba(0,0,0,0.5);
+    text-align: center;
+    letter-spacing: 0.5px;
+  }
+  .combat-btn:hover {
+    background: linear-gradient(to bottom, #500, #200);
+    border-color: #f00;
+    color: #fff;
+    box-shadow: 0 0 12px rgba(255,0,0,0.4);
+    transform: translateY(-1px);
+  }
+  .combat-btn:active {
+    transform: translateY(1px);
+    box-shadow: none;
+  }
+  .combat-btn:disabled {
+    opacity: 0.3; cursor: not-allowed;
+    transform: none !important;
+    box-shadow: none !important;
+  }
+  .combat-btn.btn-back {
+    background: linear-gradient(to bottom, #222, #111);
+    border-color: #555;
+    color: #aaa;
+    font-size: 12px;
+    padding: 8px;
+  }
+  .combat-btn.btn-back:hover {
+    border-color: #888; color: #ddd;
+    box-shadow: none;
+  }
+  .combat-btn.btn-skill {
+    background: linear-gradient(to bottom, #230, #120);
+    border-color: #680;
+    color: #fc8;
+  }
+  .combat-btn.btn-skill:hover {
+    border-color: #fc0;
+    box-shadow: 0 0 10px rgba(255,200,0,0.3);
+  }
+  .combat-btn.btn-item {
+    background: linear-gradient(to bottom, #023, #012);
+    border-color: #068;
+    color: #8cf;
+  }
+  .combat-btn.btn-item:hover {
+    border-color: #0af;
+    box-shadow: 0 0 10px rgba(0,170,255,0.3);
+  }
+
+  .mana-cost { font-size: 10px; color: #88f; margin-left: 4px; }
+  .dmg-dice { font-size: 10px; color: #f88; margin-left: 4px; }
+
+  /* Hit animations */
+  .hit-flash { animation: hitFlash 0.35s ease-in-out; }
+  @keyframes hitFlash {
+    0% { filter: brightness(1); }
+    30% { filter: brightness(2.5) saturate(2); }
+    100% { filter: brightness(1); }
+  }
+  .shake { animation: shakeAnim 0.3s ease-in-out; }
+  @keyframes shakeAnim {
+    0%, 100% { transform: translateX(0); }
+    25% { transform: translateX(-4px); }
+    75% { transform: translateX(4px); }
+  }
+
+  /* Floating damage numbers */
+  .dmg-float {
+    position: absolute;
+    font-weight: bold;
+    font-size: 22px;
+    pointer-events: none;
+    animation: dmgRise 1s ease-out forwards;
+    z-index: 200;
+    text-shadow: 0 0 6px rgba(0,0,0,0.8);
+  }
+  .dmg-float.dmg-dealt { color: #f44; }
+  .dmg-float.dmg-taken { color: #f84; }
+  .dmg-float.heal-float { color: #4f4; }
+  .dmg-float.crit-float { color: #ff0; font-size: 28px; }
+  @keyframes dmgRise {
+    0% { opacity: 1; transform: translateY(0) scale(0.5); }
+    20% { transform: translateY(-10px) scale(1.2); }
+    100% { opacity: 0; transform: translateY(-50px) scale(0.8); }
+  }
+
+  /* Combat transition */
+  .combat-arena.combat-entering { animation: combatSlideUp 0.5s ease-out; }
+  @keyframes combatSlideUp {
+    from { opacity: 0; transform: translateY(40px); }
+    to { opacity: 1; transform: translateY(0); }
+  }
+  .combat-arena.combat-ending {
+    animation: combatFadeOut 0.6s ease-in forwards;
+  }
+  @keyframes combatFadeOut {
+    to { opacity: 0; transform: scale(0.95); }
+  }
+
+  /* Turn indicator */
+  .turn-indicator {
+    text-align: center;
+    font-size: 11px;
+    color: #666;
+    padding: 2px;
+    letter-spacing: 2px;
+    text-transform: uppercase;
+  }
+  .turn-indicator.your-turn { color: #4f4; }
+  .turn-indicator.enemy-turn { color: #f44; }
 </style>
 </head>
 <body>
@@ -111,7 +326,7 @@
       <option value="medium" selected>🗺️ Standard Quest (20-25 turns)</option>
       <option value="large">📖 Grand Saga (30-35 turns)</option>
     </select>
-    <input type="text" id="keywordsInput" placeholder="Adventure keywords... (e.g. sci-fi space station horror)" maxlength="200" style="font-size:12px;color:#999;">
+    <input type="text" id="keywordsInput" placeholder="Adventure keywords... (e.g. haunted castle undead siege)" maxlength="200" style="font-size:12px;color:#999;">
     <button onclick="startSession()">Enter the World</button>
   </div>
 </div>
@@ -180,21 +395,13 @@
 
 <!-- Combat Overlay -->
 <div id="combatOverlay" class="combat-overlay-glass" style="display:none;">
-  <div class="combat-arena">
-    <div class="arena-top" id="combatEnemyInfo">
-      <!-- Enemy UI gets injected here -->
-    </div>
-    <div class="arena-bottom" id="combatPlayerInfo">
-      <!-- Player UI gets injected here -->
-    </div>
-    <div class="combat-log-area" id="combatLog">
-      <!-- Logs get injected here -->
-    </div>
-    <div class="combat-controls" id="combatAbilities" style="padding-bottom:10px;">
-      <!-- Abilities get injected here -->
-    </div>
-    <div class="combat-controls" id="combatItems" style="border-top:none; padding-top:0;">
-      <!-- Items get injected here -->
+  <div class="combat-arena" id="combatArena">
+    <div class="arena-top" id="combatEnemyInfo"></div>
+    <div class="arena-bottom" id="combatPlayerInfo"></div>
+    <div class="combat-log-area" id="combatLog"></div>
+    <div class="combat-controls" id="combatControls">
+      <div class="turn-indicator your-turn" id="turnIndicator">YOUR TURN</div>
+      <div class="menu-tier" id="menuTier"></div>
     </div>
   </div>
 </div>
@@ -232,15 +439,13 @@ async function startSession() {
     const res = await fetch(API + '/session/new', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({player_name: name, keywords: keywords, character_class: characterClass, campaign_size: campaignSize}),
+      body: JSON.stringify({player_name: name, keywords, character_class: characterClass, campaign_size: campaignSize}),
     });
     const data = await res.json();
     sessionId = data.session_id;
     document.getElementById('sName').textContent = name;
     document.getElementById('sessionInfo').textContent = `Turn 0 | ${data.campaign.title}`;
 
-    // Show campaign info
-    // Opening narration (rich) or fallback to raw campaign data
     const classEmoji = {warrior:'⚔️',rogue:'🗡️',wizard:'🔮',cleric:'✨',bard:'🎵'};
     const className = data.character_class ? data.character_class.charAt(0).toUpperCase() + data.character_class.slice(1) : characterClass;
     const classInfo = `${classEmoji[data.character_class] || '⚔️'} <strong>${className}</strong> — ${data.class_description || ''}`;
@@ -249,11 +454,9 @@ async function startSession() {
     if (data.opening_narration) {
       addMsg('system', `<strong>📜 ${data.campaign.title}</strong>\n\n${data.opening_narration}`);
     } else {
-      const campaignMsg = `<strong>📜 ${data.campaign.title}</strong>\n\n${data.campaign.premise}\n\n<em>Setting: ${data.campaign.setting}</em>`;
-      addMsg('system', campaignMsg);
+      addMsg('system', `<strong>📜 ${data.campaign.title}</strong>\n\n${data.campaign.premise}\n\n<em>Setting: ${data.campaign.setting}</em>`);
     }
     
-    // Add opening choices if provided
     if (data.choices && data.choices.length > 0) {
       let content = '<div class="choices-box">';
       data.choices.forEach(c => {
@@ -263,7 +466,6 @@ async function startSession() {
       addMsg('system', content);
     }
 
-    // Remove the placeholder welcome
     const welcome = document.getElementById('welcomeMsg');
     if (welcome) welcome.remove();
 
@@ -301,7 +503,6 @@ async function startSession() {
       }
     }
     
-    // Set initial beat if available
     if (data.campaign && data.campaign.acts && data.campaign.acts[0] && data.campaign.acts[0].beats[0]) {
       document.getElementById('sBeat').textContent = data.campaign.acts[0].beats[0].title;
     }
@@ -332,7 +533,7 @@ async function submitAction(actionText) {
     const data = await res.json();
     document.getElementById(loadingId).remove();
 
-    // Extract → suggestions from narration, clean them from display
+    // Extract → suggestions from narration
     let cleanNarration = data.narration || '';
     const arrowChoices = [];
     cleanNarration = cleanNarration.replace(/^(?:→|->)\s*(.+)$/gm, (_, choice) => { arrowChoices.push(choice.trim()); return ''; }).trim();
@@ -369,10 +570,9 @@ async function submitAction(actionText) {
     if (data.level_up && data.level_up.new_level) {
       metaHtml += `<span class="dice-badge crit-success">⬆️ Level ${data.level_up.new_level}!</span>`;
     }
-    if (data.guard_warning) {
-      metaHtml += `<span class="dice-badge crit-failure">⚠️ Guard: ${data.guard_warning}</span>`;
-    }
     metaHtml += '</div>';
+
+    let content = data.narration + metaHtml;
 
     // NPC dialogue display
     if (data.npc_dialogue && data.npc_dialogue.dialogue) {
@@ -385,17 +585,7 @@ async function submitAction(actionText) {
       </div>`;
     }
 
-    let content = data.narration + metaHtml;
-
-    // Guard warning display
-    if (data.guard_warning) {
-      content += `<div style="background:#2a1515;border:1px solid #6a3a3a;border-radius:8px;padding:10px;margin-top:6px">
-        <div style="color:#e88;font-weight:bold">⚠️ World Resistance</div>
-        <div style="color:#ccc">${data.guard_warning}</div>
-      </div>`;
-    }
-
-    // If choices are presented
+    // Choices
     if (data.choices && data.choices.length > 0) {
       content += '<div class="choices-box">';
       data.choices.forEach(c => {
@@ -408,14 +598,11 @@ async function submitAction(actionText) {
     updateSidebar(data);
     document.getElementById('sessionInfo').textContent = `Turn ${data.turn_number}`;
     
-    // Check for auto-combat ambush
+    // Check for combat trigger
     if (data.combat_started && data.combat_data) {
         setTimeout(() => {
-            inCombat = true;
-            document.getElementById('combatOverlay').style.display = 'block';
-            updateCombatUI(data.combat_data);
-            addMsg('system', "<strong>⚔️ COMBAT INITIATED!</strong>");
-        }, 800); // Slight delay for dramatic effect after reading the narrative ambush
+            startLocalCombat(data.combat_data);
+        }, 800);
     } else if (data.campaign_ended) {
         setTimeout(() => {
             document.getElementById('campaignEndOverlay').style.display = 'flex';
@@ -430,10 +617,6 @@ async function submitAction(actionText) {
   busy = false;
   document.getElementById('submitBtn').disabled = false;
   document.getElementById('actionInput').focus();
-
-  // Clear combat trigger button (user took a non-combat action)
-  const combatBtn = document.getElementById('combatTriggerBtn');
-  if (combatBtn) combatBtn.remove();
 }
 
 function addMsg(type, content) {
@@ -460,14 +643,11 @@ function updateSidebar(data) {
   document.getElementById('sXp').textContent = `${data.player_xp || 0} / ${xpToNext}`;
   document.getElementById('xpFill').style.width = `${((data.player_xp || 0) / xpToNext) * 100}%`;
 
-  // Inventory
   if (data.inventory && data.inventory.length > 0) {
     document.getElementById('sInventory').innerHTML = data.inventory.map(i =>
       `<div class="inventory-item">${i.name} <span class="item-type">[${i.type}]</span></div>`
     ).join('');
   }
-
-  // Level up already shown inline in narration badges
 
   document.getElementById('lastRoll').style.display = 'block';
 
@@ -488,11 +668,9 @@ function updateSidebar(data) {
   document.getElementById('sResult').textContent = data.outcome.replace(/_/g, ' ');
 
   if (data.current_beat) {
-    const beatDiv = document.getElementById('sBeat');
-    beatDiv.textContent = data.current_beat;
+    document.getElementById('sBeat').textContent = data.current_beat;
   }
 
-  // NPCs in sidebar
   if (data.npcs && data.npcs.length > 0) {
     document.getElementById('sNPCs').innerHTML = data.npcs.map(n =>
       `<div style="padding:2px 0;color:#c8a">${n.name} <span style="color:#666;font-size:10px">[${n.role}] disp:${(n.disposition||0).toFixed(1)}</span></div>`
@@ -500,184 +678,559 @@ function updateSidebar(data) {
   }
 }
 
-// ─── Combat Functions ───
-let inCombat = false;
-let combatAbilities = [];
-
-async function startCombatEncounter(enemyTier = 1, enemyKey = null) {
-  if (!sessionId) return;
-  try {
-    const params = new URLSearchParams();
-    if (enemyTier) params.set('enemy_tier', enemyTier);
-    if (enemyKey) params.set('enemy_key', enemyKey);
-    const res = await fetch(API + '/session/' + sessionId + '/combat/start?' + params, {method: 'POST'});
-    const data = await res.json();
-    if (data.message) addMsg('system', `<strong>⚔️ ${data.message}</strong>`);
-    inCombat = true;
-    document.getElementById('combatOverlay').style.display = 'block';
-    updateCombatUI(data);
-  } catch(e) { alert('Combat start failed: ' + e); }
-}
-
-async function combatUseAbility(abilityName) {
-  if (!sessionId || !inCombat || busy) return;
-  busy = true;
-  document.getElementById('combatAbilities').style.opacity = '0.5';
-  document.getElementById('combatAbilities').style.pointerEvents = 'none';
-  try {
-    const params = new URLSearchParams();
-    params.set('ability_name', abilityName);
-    const res = await fetch(API + '/session/' + sessionId + '/combat/action?' + params, {method: 'POST'});
-    const data = await res.json();
-    // Log
-    if (data.narration) addMsg('system', data.narration);
-    if (data.player_log) document.getElementById('combatLog').innerHTML += '<div style="color:#8c8">' + data.player_log + '</div>';
-    if (data.enemy_log) document.getElementById('combatLog').innerHTML += '<div style="color:#c88">' + data.enemy_log + '</div>';
-    updateCombatUI(data);
-    if (data.combat_status === 'victory') {
-      endCombat('victory', data.rewards, data.choices);
-    } else if (data.combat_status === 'defeat') {
-      endCombat('defeat', null, []);
-    }
-    // Update sidebar
-    if (data.player) {
-      document.getElementById('sHp').textContent = data.player.hp + ' / ' + data.player.max_hp;
-      document.getElementById('hpFill').style.width = (data.player.hp / data.player.max_hp * 100) + '%';
-    }
-  } catch(e) { alert('Combat action failed: ' + e); }
-  busy = false;
-  document.getElementById('combatAbilities').style.opacity = '1';
-  document.getElementById('combatAbilities').style.pointerEvents = 'auto';
-}
-
-async function combatFlee() {
-  combatUseAbility('Flee');
-}
-
-function updateCombatUI(data) {
-  // Enemy info
-  if (data.enemy) {
-    const hpPct = Math.max(0, data.enemy.hp / data.enemy.max_hp * 100);
-    document.getElementById('combatEnemyInfo').innerHTML = `
-      <div class="combat-entity">
-        <h3>${data.enemy.name}</h3>
-        <div class="hp-bar-bg"><div class="hp-bar-fill" id="enemyHpFill" style="width:${hpPct}%;"></div></div>
-        <div class="hp-text">HP: ${data.enemy.hp}/${data.enemy.max_hp}  |  Armor: ${data.enemy.armor || 0}</div>
-        ${data.enemy.status_effects && data.enemy.status_effects.length ? '<div style="color:#c8a;font-size:11px;margin-top:4px;">Effects: '+data.enemy.status_effects.join(', ')+'</div>' : ''}
-      </div>
-    `;
-    // Add hit animation if not full HP
-    if (hpPct < 100) {
-        const el = document.getElementById('enemyHpFill');
-        if (el) {
-            el.classList.remove('hit-anim');
-            void el.offsetWidth; // trigger reflow
-            el.classList.add('hit-anim');
-        }
-    }
+function updateSidebarFromCombat(playerHp, maxHp, playerMana, maxMana, playerLevel, playerXp, xpToNext, inventory) {
+  document.getElementById('sHp').textContent = `${playerHp} / ${maxHp}`;
+  document.getElementById('hpFill').style.width = `${(playerHp / maxHp) * 100}%`;
+  document.getElementById('sMana').textContent = `${playerMana} / ${maxMana}`;
+  document.getElementById('manaFill').style.width = `${(playerMana / maxMana) * 100}%`;
+  if (playerLevel) document.getElementById('sLevel').textContent = playerLevel;
+  if (playerXp !== undefined && xpToNext) {
+    document.getElementById('sXp').textContent = `${playerXp} / ${xpToNext}`;
+    document.getElementById('xpFill').style.width = `${(playerXp / xpToNext) * 100}%`;
   }
-  // Player info
-  const playerName = document.getElementById('sName').textContent || 'Player';
-  if (data.player) {
-    const hpPct = Math.max(0, data.player.hp / data.player.max_hp * 100);
-    const mpPct = Math.max(0, data.player.mana / data.player.max_mana * 100);
-    document.getElementById('combatPlayerInfo').innerHTML = `
-      <div class="combat-entity player">
-        <h3>${playerName}</h3>
-        <div class="hp-bar-bg"><div class="hp-bar-fill" id="playerHpFill" style="width:${hpPct}%;"></div></div>
-        <div class="hp-text">HP: ${data.player.hp}/${data.player.max_hp}  |  MP: ${data.player.mana}/${data.player.max_mana}</div>
-        ${data.player.status_effects && data.player.status_effects.length ? '<div style="color:#c8a;font-size:11px;margin-top:4px;">Effects: '+data.player.status_effects.join(', ')+'</div>' : ''}
-      </div>
-    `;
-    if (hpPct < 100) {
-        const pEl = document.getElementById('playerHpFill');
-        if (pEl) {
-            pEl.classList.remove('hit-anim');
-            void pEl.offsetWidth; // reflow
-            pEl.classList.add('hit-anim');
-        }
-    }
+  if (inventory) {
+    document.getElementById('sInventory').innerHTML = inventory.map(i =>
+      `<div class="inventory-item">${i.name} <span class="item-type">[${i.type}]</span></div>`
+    ).join('');
   }
-  // Initialize Combat State Machine
-  combatStateData = data;
-  renderCombatMainMenu();
 }
 
-let combatStateData = null;
+// ═══════════════════════════════════════════════════════
+//  LOCAL COMBAT ENGINE — All resolution happens client-side
+// ═══════════════════════════════════════════════════════
 
-function renderCombatMainMenu() {
-    if (!combatStateData) return;
-    document.getElementById('combatAbilities').innerHTML = `
-      <button class="combat-btn" onclick="renderCombatAttackMenu()">⚔️ Attack</button>
-      <button class="combat-btn" onclick="renderCombatSkillMenu()">✨ Skill</button>
-      <button class="combat-btn" onclick="renderCombatItemsMenu()">🎒 Items</button>
-      <button class="combat-btn" style="background:linear-gradient(to bottom, #311, #100);" onclick="combatFlee()">🏃 Flee</button>
-    `;
-    document.getElementById('combatItems').innerHTML = ''; // Keep items tray empty in 3-menu UI
+let combatState = null;
+
+function rollD20() { return Math.floor(Math.random() * 20) + 1; }
+
+function rollDice(str) {
+  if (!str) return 0;
+  const m = str.match(/(\d+)d(\d+)([+-]\d+)?/);
+  if (!m) return 0;
+  const count = parseInt(m[1]), sides = parseInt(m[2]), mod = parseInt(m[3] || 0);
+  let total = 0;
+  for (let i = 0; i < count; i++) total += Math.floor(Math.random() * sides) + 1;
+  return total + mod;
 }
 
-function renderCombatAttackMenu() {
-    if (!combatStateData || !combatStateData.inventory) return;
-    const weapons = combatStateData.inventory.filter(i => i.type === "weapon");
-    let html = weapons.map(w => `<button class="combat-btn" onclick="combatUseAbility('Attack with ${w.name}')">⚔️ ${w.name}</button>`).join('');
-    if (weapons.length === 0) html = `<div style="grid-column: span 2; text-align: center; color: #555;">No weapons equipped</div>`;
-    html += `<button class="combat-btn" style="background:#222; border-color:#555;" onclick="renderCombatMainMenu()">🔙 Go Back</button>`;
-    document.getElementById('combatAbilities').innerHTML = html;
+function startLocalCombat(combatData) {
+  combatState = {
+    enemy: { ...combatData.enemy, status_effects: [] },
+    player: {
+      ...combatData.player,
+      status_effects: [],
+      armor: combatData.player.armor || 0,
+      attack_bonus: combatData.player.attack_bonus || 0,
+    },
+    abilities: combatData.abilities || [],
+    inventory: combatData.inventory || [],
+    turn: 1,
+    log: [],
+    resolved: false,
+    enemy_tier: combatData.enemy_tier || 1,
+  };
+
+  document.getElementById('combatOverlay').style.display = 'flex';
+  const arena = document.getElementById('combatArena');
+  arena.classList.remove('combat-ending');
+  arena.classList.add('combat-entering');
+  setTimeout(() => arena.classList.remove('combat-entering'), 500);
+
+  renderCombatEntities();
+  renderMainMenu();
+  addCombatLog(`⚔️ A ${combatState.enemy.name} appears!`, 'system-log');
 }
 
-function renderCombatSkillMenu() {
-    if (!combatStateData || !combatStateData.abilities) return;
-    let html = combatStateData.abilities.map(a => {
-      const cost = a.mana_cost ? ` (${a.mana_cost}mp)` : '';
-      const dmg = a.damage_dice ? ` ${a.damage_dice}` : '';
-      return `<button class="combat-btn" onclick="combatUseAbility('${a.name}')">${a.name}${cost}${dmg}</button>`;
-    }).join('');
-    html += `<button class="combat-btn" style="background:#222; border-color:#555;" onclick="renderCombatMainMenu()">🔙 Go Back</button>`;
-    document.getElementById('combatAbilities').innerHTML = html;
+function renderCombatEntities() {
+  if (!combatState) return;
+  const e = combatState.enemy;
+  const p = combatState.player;
+
+  const ePct = Math.max(0, (e.hp / e.max_hp) * 100);
+  const pPct = Math.max(0, (p.hp / p.max_hp) * 100);
+
+  document.getElementById('combatEnemyInfo').innerHTML = `
+    <div class="combat-entity enemy-entity" id="enemyCard">
+      <span class="entity-icon">👹</span>
+      <h3>${e.name}</h3>
+      <div class="hp-bar-bg"><div class="hp-bar-fill" style="width:${ePct}%"></div></div>
+      <div class="hp-text">HP: ${Math.max(0,e.hp)}/${e.max_hp}  |  Armor: ${e.armor}</div>
+      ${e.status_effects.length ? '<div class="status-effects-row">' + e.status_effects.map(se => `<span class="status-pill">${se.name}${se.duration > 0 ? ' ('+se.duration+')' : ''}</span>`).join('') + '</div>' : ''}
+    </div>`;
+
+  document.getElementById('combatPlayerInfo').innerHTML = `
+    <div class="combat-entity player-entity" id="playerCard">
+      <span class="entity-icon">🥷</span>
+      <h3>${p.name}</h3>
+      <div class="hp-bar-bg"><div class="hp-bar-fill" style="width:${pPct}%"></div></div>
+      <div class="hp-text">HP: ${Math.max(0,p.hp)}/${p.max_hp}  |  MP: ${p.mana}/${p.max_mana}</div>
+      ${p.status_effects.length ? '<div class="status-effects-row">' + p.status_effects.map(se => `<span class="status-pill">${se.name}${se.duration > 0 ? ' ('+se.duration+')' : ''}</span>`).join('') + '</div>' : ''}
+    </div>`;
 }
 
-function renderCombatItemsMenu() {
-    if (!combatStateData || !combatStateData.inventory) return;
-    const consumables = combatStateData.inventory.filter(i => i.type === "consumable");
-    let html = consumables.map(i => `<button class="combat-btn" style="background:linear-gradient(to bottom, #113, #001);border-color:#226;" onclick="combatUseAbility('Use ${i.name}')">🧪 ${i.name}</button>`).join('');
-    if (consumables.length === 0) html = `<div style="grid-column: span 2; text-align: center; color: #555;">Backpack is empty...</div>`;
-    html += `<button class="combat-btn" style="background:#222; border-color:#555;" onclick="renderCombatMainMenu()">🔙 Go Back</button>`;
-    document.getElementById('combatAbilities').innerHTML = html;
+function addCombatLog(msg, cls = 'system-log') {
+  const log = document.getElementById('combatLog');
+  const entry = document.createElement('div');
+  entry.className = `combat-log-entry ${cls}`;
+  entry.textContent = msg;
+  log.prepend(entry);
+  // Keep max 20 entries
+  while (log.children.length > 20) log.removeChild(log.lastChild);
 }
 
-function endCombat(result, rewards, choices) {
-  inCombat = false;
-  setTimeout(() => {
-    document.getElementById('combatOverlay').style.display = 'none';
-    if (result === 'victory') {
-      let msg = '<strong>🏆 Victory!</strong>';
-      if (rewards) {
-        if (rewards.xp) msg += `\n+${rewards.xp} XP`;
-        if (rewards.loot_descriptions) rewards.loot_descriptions.forEach(l => msg += `\n${l}`);
-      }
-      msg += `\n\n<em>The battle is won.</em>`;
-      addMsg('system', msg);
-      
-      if (choices && choices.length > 0) {
-        let content = '<div class="choices-box">';
-        choices.forEach(c => {
-          content += `<button class="choice-btn" onclick="submitAction('${c.replace(/'/g, "\\'")}')">${c}</button>`;
-        });
-        content += '</div>';
-        addMsg('system', content);
-      }
+function showDmgFloat(targetId, text, cls) {
+  const target = document.getElementById(targetId);
+  if (!target) return;
+  const float = document.createElement('div');
+  float.className = `dmg-float ${cls}`;
+  float.textContent = text;
+  const rect = target.getBoundingClientRect();
+  const arena = document.getElementById('combatArena').getBoundingClientRect();
+  float.style.left = (rect.left - arena.left + rect.width/2 - 20) + 'px';
+  float.style.top = (rect.top - arena.top + 10) + 'px';
+  document.getElementById('combatArena').appendChild(float);
+  setTimeout(() => float.remove(), 1000);
+}
+
+function flashCard(cardId) {
+  const el = document.getElementById(cardId);
+  if (!el) return;
+  el.classList.remove('hit-flash', 'shake');
+  void el.offsetWidth;
+  el.classList.add('hit-flash', 'shake');
+  setTimeout(() => el.classList.remove('hit-flash', 'shake'), 400);
+}
+
+// ─── Three-Tier Menu System ───
+
+function renderMainMenu() {
+  const tier = document.getElementById('menuTier');
+  document.getElementById('turnIndicator').textContent = 'YOUR TURN';
+  document.getElementById('turnIndicator').className = 'turn-indicator your-turn';
+  tier.innerHTML = `
+    <button class="combat-btn" onclick="renderAttackMenu()">⚔️ Attack</button>
+    <button class="combat-btn btn-skill" onclick="renderSkillMenu()">✨ Skill</button>
+    <button class="combat-btn btn-item" onclick="renderItemMenu()">🎒 Items</button>
+  `;
+}
+
+function renderAttackMenu() {
+  if (!combatState) return;
+  const weapons = combatState.inventory.filter(i => i.type === 'weapon');
+  const tier = document.getElementById('menuTier');
+  let html = '';
+  if (weapons.length === 0) {
+    html += `<button class="combat-btn" onclick="doPlayerAttack('Unarmed Strike', '1d6')">👊 Unarmed Strike</button>`;
+  } else {
+    weapons.forEach(w => {
+      const dice = getWeaponDice(w.name);
+      html += `<button class="combat-btn" onclick="doPlayerAttack('${w.name}', '${dice}')">⚔️ ${w.name}<span class="dmg-dice">${dice}</span></button>`;
+    });
+  }
+  html += `<button class="combat-btn btn-back" onclick="renderMainMenu()">🔙 Back</button>`;
+  tier.innerHTML = html;
+}
+
+function renderSkillMenu() {
+  if (!combatState) return;
+  const tier = document.getElementById('menuTier');
+  let html = '';
+  if (combatState.abilities.length === 0) {
+    html += `<div style="grid-column:span 3;text-align:center;color:#555;">No abilities available</div>`;
+  } else {
+    combatState.abilities.forEach(a => {
+      const cost = a.mana_cost ? `<span class="mana-cost">${a.mana_cost}mp</span>` : '';
+      const dmg = a.damage_dice ? `<span class="dmg-dice">${a.damage_dice}</span>` : '';
+      const disabled = a.mana_cost > combatState.player.mana ? 'disabled' : '';
+      html += `<button class="combat-btn btn-skill" ${disabled} onclick="doPlayerSkill(${JSON.stringify(a).replace(/"/g, '&quot;')})">${a.name}${cost}${dmg}</button>`;
+    });
+  }
+  html += `<button class="combat-btn btn-back" onclick="renderMainMenu()">🔙 Back</button>`;
+  tier.innerHTML = html;
+}
+
+function renderItemMenu() {
+  if (!combatState) return;
+  const consumables = combatState.inventory.filter(i => i.type === 'consumable');
+  const tier = document.getElementById('menuTier');
+  let html = '';
+  if (consumables.length === 0) {
+    html += `<div style="grid-column:span 3;text-align:center;color:#555;">Backpack is empty...</div>`;
+  } else {
+    consumables.forEach(item => {
+      const effect = item.hp_restore ? `+${item.hp_restore}HP` : item.mana_restore ? `+${item.mana_restore}MP` : '';
+      html += `<button class="combat-btn btn-item" onclick="doPlayerItem('${item.name}', ${item.hp_restore||0}, ${item.mana_restore||0})">🧪 ${item.name} <span style="font-size:10px;color:#8cf">${effect}</span></button>`;
+    });
+  }
+  html += `<button class="combat-btn btn-back" onclick="renderMainMenu()">🔙 Back</button>`;
+  tier.innerHTML = html;
+}
+
+function getWeaponDice(weaponName) {
+  const w = weaponName.toLowerCase();
+  if (w.includes('longsword') || w.includes('sword') && !w.includes('dark')) return '1d8+2';
+  if (w.includes('greatsword') || w.includes('dark steel')) return '2d6+3';
+  if (w.includes('dagger') || w.includes('twin')) return '1d6+1';
+  if (w.includes('rapier')) return '1d8+1';
+  if (w.includes('staff') || w.includes('oak')) return '1d6+1';
+  if (w.includes('mace') || w.includes('hammer') || w.includes('war hammer')) return '1d8+2';
+  if (w.includes('lute')) return '1d4';
+  return '1d6+1';
+}
+
+// ─── Player Actions (Local) ───
+
+function doPlayerAttack(weaponName, dice) {
+  if (!combatState || combatState.resolved) return;
+  disableControls();
+
+  const roll = rollD20();
+  const atkBonus = combatState.player.attack_bonus;
+  const total = roll + atkBonus;
+  const threshold = 8 + combatState.enemy.armor;
+  const isCrit = roll === 20;
+  const isMiss = roll === 1;
+
+  if (isMiss) {
+    addCombatLog(`You swing ${weaponName}... MISS! (rolled 1)`, 'player-log');
+    flashCard('playerCard');
+  } else if (total < threshold && !isCrit) {
+    addCombatLog(`Your ${weaponName} glances off their armor. (${roll}+${atkBonus.toFixed(1)} vs AC ${threshold})`, 'player-log');
+    flashCard('playerCard');
+  } else {
+    let dmg = rollDice(dice);
+    if (isCrit) { dmg = Math.floor(dmg * 1.5); }
+    combatState.enemy.hp -= dmg;
+    const critTxt = isCrit ? '⚡ CRITICAL! ' : '';
+    addCombatLog(`${critTxt}You strike with ${weaponName} for ${dmg} damage! (${roll}+${atkBonus.toFixed(1)})`, isCrit ? 'crit-log' : 'player-log');
+    showDmgFloat('enemyCard', `-${dmg}`, isCrit ? 'crit-float' : 'dmg-dealt');
+    flashCard('enemyCard');
+  }
+
+  renderCombatEntities();
+
+  if (combatState.enemy.hp <= 0) {
+    combatState.enemy.hp = 0;
+    renderCombatEntities();
+    combatState.resolved = true;
+    addCombatLog(`🏆 ${combatState.enemy.name} is defeated!`, 'crit-log');
+    setTimeout(() => endLocalCombat('victory'), 1200);
+    return;
+  }
+
+  // Enemy turn after brief delay
+  setTimeout(() => doEnemyTurn(), 600);
+}
+
+function doPlayerSkill(ability) {
+  if (!combatState || combatState.resolved) return;
+  if (ability.mana_cost > combatState.player.mana) {
+    addCombatLog(`Not enough mana for ${ability.name}!`, 'system-log');
+    return;
+  }
+  disableControls();
+
+  combatState.player.mana -= ability.mana_cost;
+
+  // Support / defend abilities
+  if (ability.ability_type === 'support' || ability.ability_type === 'defend') {
+    if (ability.name.toLowerCase() === 'heal') {
+      const heal = Math.floor(Math.random() * 11) + 15; // 15-25
+      combatState.player.hp = Math.min(combatState.player.max_hp, combatState.player.hp + heal);
+      addCombatLog(`You cast ${ability.name} and restore ${heal} HP!`, 'player-log');
+      showDmgFloat('playerCard', `+${heal}`, 'heal-float');
+    } else if (ability.status_effect) {
+      combatState.player.status_effects.push({ name: ability.status_effect, duration: ability.status_duration || 2 });
+      addCombatLog(`You use ${ability.name}! Gained ${ability.status_effect}.`, 'player-log');
     } else {
-      addMsg('system', '<strong>💀 Defeat...</strong>\nThe darkness claims you.');
+      addCombatLog(`You use ${ability.name}!`, 'player-log');
     }
-  }, 1500);
+    renderCombatEntities();
+    setTimeout(() => doEnemyTurn(), 600);
+    return;
+  }
+
+  // Attack / spell abilities
+  const roll = rollD20();
+  const atkBonus = combatState.player.attack_bonus;
+  const total = roll + atkBonus;
+  const threshold = 8 + combatState.enemy.armor;
+  const isCrit = roll === 20;
+  const isMiss = roll === 1;
+
+  if (isMiss) {
+    addCombatLog(`${ability.name} misses! (rolled 1)`, 'player-log');
+    flashCard('playerCard');
+  } else if (total < threshold && !isCrit) {
+    addCombatLog(`${ability.name} glances off armor. (${roll}+${atkBonus.toFixed(1)} vs AC ${threshold})`, 'player-log');
+    flashCard('playerCard');
+  } else {
+    const dice = ability.damage_dice || '1d6';
+    let dmg = rollDice(dice);
+    if (isCrit) dmg = Math.floor(dmg * 1.5);
+    combatState.enemy.hp -= dmg;
+
+    if (ability.status_effect) {
+      combatState.enemy.status_effects.push({ name: ability.status_effect, duration: ability.status_duration || 2 });
+    }
+
+    const critTxt = isCrit ? '⚡ CRITICAL! ' : '';
+    addCombatLog(`${critTxt}${ability.name} deals ${dmg} damage!`, isCrit ? 'crit-log' : 'player-log');
+    showDmgFloat('enemyCard', `-${dmg}`, isCrit ? 'crit-float' : 'dmg-dealt');
+    flashCard('enemyCard');
+  }
+
+  renderCombatEntities();
+
+  if (combatState.enemy.hp <= 0) {
+    combatState.enemy.hp = 0;
+    renderCombatEntities();
+    combatState.resolved = true;
+    addCombatLog(`🏆 ${combatState.enemy.name} is defeated!`, 'crit-log');
+    setTimeout(() => endLocalCombat('victory'), 1200);
+    return;
+  }
+
+  setTimeout(() => doEnemyTurn(), 600);
 }
 
+function doPlayerItem(itemName, hpRestore, manaRestore) {
+  if (!combatState || combatState.resolved) return;
+  disableControls();
+
+  if (hpRestore > 0) {
+    const heal = Math.max(hpRestore, Math.floor(hpRestore * (0.8 + Math.random() * 0.4)));
+    combatState.player.hp = Math.min(combatState.player.max_hp, combatState.player.hp + heal);
+    addCombatLog(`You use ${itemName} and restore ${heal} HP!`, 'player-log');
+    showDmgFloat('playerCard', `+${heal}`, 'heal-float');
+  }
+  if (manaRestore > 0) {
+    combatState.player.mana = Math.min(combatState.player.max_mana, combatState.player.mana + manaRestore);
+    addCombatLog(`You use ${itemName} and restore ${manaRestore} mana!`, 'player-log');
+  }
+
+  // Remove the item from inventory
+  const idx = combatState.inventory.findIndex(i => i.name === itemName && i.type === 'consumable');
+  if (idx !== -1) combatState.inventory.splice(idx, 1);
+
+  renderCombatEntities();
+  setTimeout(() => doEnemyTurn(), 600);
+}
+
+// ─── Enemy AI (Local) ───
+
+function doEnemyTurn() {
+  if (!combatState || combatState.resolved) return;
+
+  document.getElementById('turnIndicator').textContent = 'ENEMY TURN';
+  document.getElementById('turnIndicator').className = 'turn-indicator enemy-turn';
+
+  // Tick enemy status effects
+  tickEffects(combatState.enemy);
+
+  const e = combatState.enemy;
+  const p = combatState.player;
+
+  if (e.hp <= 0) {
+    combatState.resolved = true;
+    addCombatLog(`🏆 ${e.name} is defeated!`, 'crit-log');
+    setTimeout(() => endLocalCombat('victory'), 800);
+    return;
+  }
+
+  // Tick player effects
+  tickEffects(p);
+
+  // Enemy AI: choose action
+  let actionName = 'Attack';
+  let damageDice = '';
+  let statusEffect = null;
+  let statusDuration = 0;
+
+  if (e.abilities && e.abilities.length > 0) {
+    if (e.hp < e.max_hp * 0.5) {
+      // Look for status effect ability first
+      const statusAbil = e.abilities.find(a => a.status_effect && !p.status_effects.some(se => se.name === a.status_effect));
+      if (statusAbil) {
+        actionName = statusAbil.name;
+        damageDice = statusAbil.damage_dice || '';
+        statusEffect = statusAbil.status_effect;
+        statusDuration = statusAbil.status_duration || 2;
+      } else {
+        // Use highest damage
+        const best = [...e.abilities].sort((a,b) => (rollDice(b.damage_dice)||0) - (rollDice(a.damage_dice)||0))[0];
+        actionName = best.name;
+        damageDice = best.damage_dice || '';
+        statusEffect = best.status_effect;
+        statusDuration = best.status_duration || 2;
+      }
+    } else if (Math.random() < 0.3) {
+      const abil = e.abilities[Math.floor(Math.random() * e.abilities.length)];
+      actionName = abil.name;
+      damageDice = abil.damage_dice || '';
+      statusEffect = abil.status_effect;
+      statusDuration = abil.status_duration || 2;
+    }
+  }
+
+  // Roll to hit
+  const roll = rollD20();
+  const total = roll + e.attack_bonus;
+  const threshold = 8 + p.armor;
+  const isCrit = roll === 20;
+  const isMiss = roll === 1;
+
+  if (isMiss) {
+    addCombatLog(`${e.name}'s ${actionName} misses!`, 'enemy-log');
+  } else if (total < threshold && !isCrit) {
+    addCombatLog(`${e.name}'s ${actionName} glances off your armor.`, 'enemy-log');
+  } else {
+    let dmg = damageDice ? rollDice(damageDice) : Math.floor(Math.random() * 6) + 1 + Math.floor(e.attack_bonus);
+    if (isCrit) dmg = Math.floor(dmg * 1.5);
+
+    p.hp -= dmg;
+
+    if (statusEffect) {
+      p.status_effects.push({ name: statusEffect, duration: statusDuration });
+    }
+
+    const critTxt = isCrit ? '⚡ CRITICAL! ' : '';
+    addCombatLog(`${critTxt}${e.name} uses ${actionName} for ${dmg} damage!`, isCrit ? 'crit-log' : 'enemy-log');
+    showDmgFloat('playerCard', `-${dmg}`, isCrit ? 'crit-float' : 'dmg-taken');
+    flashCard('playerCard');
+  }
+
+  renderCombatEntities();
+  combatState.turn++;
+
+  if (p.hp <= 0) {
+    p.hp = 0;
+    renderCombatEntities();
+    combatState.resolved = true;
+    addCombatLog(`💀 You have been defeated...`, 'crit-log');
+    setTimeout(() => endLocalCombat('defeat'), 1200);
+    return;
+  }
+
+  // Back to player turn
+  setTimeout(() => {
+    renderMainMenu();
+  }, 300);
+}
+
+function tickEffects(combatant) {
+  const expired = [];
+  for (const eff of combatant.status_effects) {
+    eff.duration--;
+    const name = eff.name.toLowerCase();
+    if (name === 'poisoned' || name === 'poison blade' || name === 'burning') {
+      const dot = Math.floor(Math.random() * 4) + 1;
+      combatant.hp = Math.max(0, combatant.hp - dot);
+      addCombatLog(`${name} ticks for ${dot} on ${combatant.name || 'you'}!`, 'system-log');
+    }
+    if (eff.duration <= 0) expired.push(eff);
+  }
+  for (const eff of expired) {
+    const idx = combatant.status_effects.indexOf(eff);
+    if (idx !== -1) combatant.status_effects.splice(idx, 1);
+  }
+}
+
+function disableControls() {
+  const btns = document.querySelectorAll('#menuTier .combat-btn');
+  btns.forEach(b => b.disabled = true);
+}
+
+// ─── End Combat — Send Result to Backend ───
+
+async function endLocalCombat(result) {
+  if (!combatState || !sessionId) return;
+
+  const arena = document.getElementById('combatArena');
+  arena.classList.add('combat-ending');
+
+  const logEntries = combatState.log.map(msg => ({
+    actor: msg.includes('You') ? 'player' : 'enemy',
+    message: msg.replace(/^[⚔️🧪⚡🏆💀]+ /, ''),
+  }));
+
+  try {
+    const res = await fetch(API + '/session/' + sessionId + '/combat/resolve', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({
+        result: result,
+        player_hp: Math.max(0, combatState.player.hp),
+        player_mana: Math.max(0, combatState.player.mana),
+        enemy_name: combatState.enemy.name,
+        combat_log: logEntries,
+        turns_taken: combatState.turn,
+      }),
+    });
+    const data = await res.json();
+
+    setTimeout(() => {
+      document.getElementById('combatOverlay').style.display = 'none';
+      arena.classList.remove('combat-ending');
+
+      if (result === 'victory') {
+        let msg = '<strong>🏆 Victory!</strong>';
+        if (data.rewards && data.rewards.xp) msg += `\n+${data.rewards.xp} XP`;
+        if (data.rewards && data.rewards.loot_descriptions) {
+          data.rewards.loot_descriptions.forEach(l => msg += `\n${l}`);
+        }
+        msg += `\n\n<em>The battle is won.</em>`;
+        addMsg('system', msg);
+        
+        if (data.narration) {
+          addMsg('system', data.narration);
+        }
+
+        if (data.choices && data.choices.length > 0) {
+          let content = '<div class="choices-box">';
+          data.choices.forEach(c => {
+            content += `<button class="choice-btn" onclick="submitAction('${c.replace(/'/g, "\\'")}')">${c}</button>`;
+          });
+          content += '</div>';
+          addMsg('system', content);
+        }
+      } else {
+        addMsg('system', '<strong>💀 Defeat...</strong>\nThe darkness claims you.');
+        if (data.narration) {
+          addMsg('system', data.narration);
+        }
+      }
+
+      // Update sidebar with post-combat state
+      updateSidebarFromCombat(
+        data.player_hp, data.max_hp, data.player_mana, data.max_mana,
+        data.player_level, data.player_xp, data.player_xp_to_next,
+        data.inventory
+      );
+
+      if (data.campaign_ended) {
+        setTimeout(() => {
+          document.getElementById('campaignEndOverlay').style.display = 'flex';
+        }, 1500);
+      }
+    }, 600);
+
+  } catch(e) {
+    console.error('Combat resolve failed:', e);
+    document.getElementById('combatOverlay').style.display = 'none';
+    addMsg('system', '⚠ Combat resolution failed: ' + e.message);
+  }
+
+  combatState = null;
+}
+
+// ─── Keyboard ───
 document.addEventListener('keydown', e => {
   if (e.key === 'Enter') {
     if (document.getElementById('connectOverlay').style.display !== 'none') {
       startSession();
-    } else if (inCombat) {
-      // In combat, Enter does nothing (use ability buttons)
+    } else if (document.getElementById('combatOverlay').style.display !== 'none') {
+      // In combat — ignore Enter, use buttons
     } else {
       submitAction();
     }
