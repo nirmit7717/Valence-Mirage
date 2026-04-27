@@ -73,7 +73,32 @@ backend/
 │   ├── narrator.txt           # Exploration narration prompt
 │   └── combat_narrator.txt    # Combat narration prompt
 └── static/
-    └── index.html             # Dark fantasy web UI
+    └── index.html             # Built React UI (Vite output)
+frontend/
+├── index.html                 # Vite entry point
+├── vite.config.js             # Build config (outputs to backend/static)
+├── src/
+│   ├── main.jsx               # React root
+│   ├── App.jsx                # Layout + theme manager
+│   ├── api.js                 # Backend API wrapper
+│   ├── hooks/
+│   │   └── useGame.js          # Core game state hook
+│   ├── components/
+│   │   ├── ConnectOverlay.jsx  # Session creation
+│   │   ├── ChatArea.jsx        # Narrative log
+│   │   ├── Sidebar.jsx         # Stats/inventory/NPCs
+│   │   ├── InputArea.jsx       # Action input
+│   │   ├── NarrativeCard.jsx   # Modal narration + typewriter + chunking
+│   │   ├── CombatOverlay.jsx   # Full combat engine + cinematics
+│   │   ├── LoadingOverlay.jsx  # Fullscreen loading spinner
+│   │   ├── SettingsPanel.jsx   # TTS/animation/speed controls
+│   │   └── CampaignEndOverlay.jsx
+│   └── utils/
+│       ├── tts.js              # Browser SpeechSynthesis
+│       ├── typewriter.js        # Character-by-character reveal
+│       ├── chunker.js           # Smart narration splitting
+│       ├── combat.js            # Pure combat resolution
+│       └── theme.js             # Dynamic theming + ambience
 ```
 
 ---
@@ -83,7 +108,7 @@ backend/
 | Component | Technology |
 |-----------|-----------|
 | Backend | Python 3, FastAPI, Uvicorn |
-| Frontend | Vanilla HTML/CSS/JS (dark fantasy theme) |
+| Frontend | React + Vite (dark fantasy immersive UI) |
 | AI — Intent Parsing | Llama 3.1 8B (NVIDIA NIM) |
 | AI — Narration | Llama 3.3 70B (NVIDIA NIM) |
 | AI — Embeddings | NV-EmbedQA-E5 (NVIDIA NIM) |

@@ -21,3 +21,17 @@ PROGRESS.md
 Thumbs.db
 backend/data/chroma_db/
 
+# Build output (generated from frontend/)
+backend/static/assets/
+backend/static/favicon.svg
+backend/static/icons.svg
+
+# Old backup
+backend/static/index.old.html
+
+# Old vanilla JS modules (replaced by React)
+backend/static/modules/
+
+# Node
+frontend/node_modules/
+frontend/dist/

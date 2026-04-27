@@ -1,6 +1,71 @@
 # Valence Mirage: Change Tracker
 
-This document tracks all significant architectural improvements, feature additions, and bug fixes implemented during this session to finalize the game mechanics and combat loop.
+This document tracks all significant architectural improvements, feature additions, and bug fixes.
+
+---
+
+## v0.5.0 — React UI Overhaul & Immersion System (2026-04-27)
+
+### 🏗️ Architecture: Vanilla JS → React SPA
+- **Full React rewrite**: Converted the entire frontend from a single 1200-line HTML file to a modular React + Vite SPA
+- **Component-based**: 9 components, 1 custom hook, 5 utility modules
+- **Build system**: Vite builds to `backend/static/`, zero backend changes required
+- **Old UI preserved**: `index.old.html` backed up in static directory
+
+### 📜 NarrativeCard System (Feature #1, #2)
+- **Modal overlay card** for narrations with fade/slide transitions
+- **Escape/click-outside to dismiss**
+- **TTS toggle button** in card header
+- **Choices rendered as styled buttons** inside the card
+- **Continue button** for non-choice narrations
+
+### ⌨️ Typewriter Animation (Feature #9)
+- **Character-by-character text reveal** (~20ms per char, configurable)
+- **Click to skip** — instantly reveals full text
+- **Auto-skip for long text** (>800 chars)
+- **TTS starts immediately**, does not wait for typing
+- **Speed adjustable** via Settings Panel (5–50ms)
+
+### 📖 Smart Narration Chunking (Feature #11)
+- **Splits long narrations** (>450 chars) into logical segments
+- **Paragraph-first splitting**, sentence-level fallback
+- **Sequential display**: chunk → Continue → next chunk → ... → choices
+- **Chunk indicator** (e.g. "— 2 / 4 —")
+- **Client-side only**, no backend changes
+
+### 🔊 Text-to-Speech (Feature #3)
+- **Browser SpeechSynthesis API** with HTML stripping
+- **Chunked speaking** at sentence boundaries (200-char chunks)
+- **Cancels previous speech** before new narration
+- **Toggle from Settings Panel or NarrativeCard header**
+
+### 🎨 Dynamic Background Theming (Feature #4, #12)
+- **10 theme mappings**: fantasy, dark_fantasy, horror, sci_fi, desert, forest, ocean, underdark, mountain, ruins
+- **Auto-detected** from campaign keywords, setting, title, premise
+- **Smooth CSS transitions** (1.2s gradient fade)
+- **Ambient animations**: subtle brightness/saturation pulses per theme
+
+### ⏳ Loading Overlay (Feature #5)
+- **Fullscreen semi-transparent overlay** with spinner
+- **Randomized flavor text** ("The dice are rolling...", "Fate stirs...")
+- **Blocks all clicks** during API calls
+
+### ⚔️ Combat Cinematic Effects (Feature #10)
+- **Screen flash**: white/yellow for crits, blue for misses, red for hits
+- **Duration < 300ms** — subtle and fast
+- **Detection from combat log** keywords
+- **Toggle-able** via Settings Panel
+
+### ⚙️ Settings Panel (Feature #13)
+- **Fixed bottom-right gear icon**
+- **Controls**: TTS on/off, Animations on/off, Text speed slider
+
+### 🛡️ Performance Safeguards (Feature #14)
+- **Typewriter cancels cleanly** on new narration
+- **TTS cancels before new speech** — no queue buildup
+- **No memory leaks**: all intervals/timeouts cleaned up
+
+---
 
 ## 🛠️ Gameplay Mechanics & Pacing
 - **Forced Pacing System**: Implemented `turns_since_roll` and `turns_in_beat` counters. The system now automatically forces an obstacle or combat encounter if the player avoids risky actions for more than 4 turns.
