@@ -15,10 +15,13 @@ export function useGame() {
   const [loading, setLoading] = useState(false);
   const [narration, setNarration] = useState(null);
   const [combat, setCombat] = useState(null);
-  const [pendingCombatData, setPendingCombatData] = useState(null);
   const [campaignEnded, setCampaignEnded] = useState(false);
+  const [gameOver, setGameOver] = useState(false);
+  const [victory, setVictory] = useState(false);
   const [theme, setTheme] = useState('default');
   const [busy, setBusy] = useState(false);
+  const [diceResult, setDiceResult] = useState(null);     // triggers dice animation
+  const [pendingResponse, setPendingResponse] = useState(null); // queued until dice animation completes
   const msgIdRef = useRef(0);
 
   const addMessage = useCallback((type, content) => {
@@ -76,6 +79,7 @@ export function useGame() {
           npcs: data.npcs || [],
           effects: [],
           lastRoll: null,
+          objective: data.world_state?.campaign_objective || data.campaign?.possible_endings?.[0] || '',
         });
       }
 
@@ -85,8 +89,111 @@ export function useGame() {
     }
   }, [addMessage]);
 
+  // Called by DiceRoll when animation finishes — processes the queued response
+  const onDiceAnimationComplete = useCallback(() => {
+    setDiceResult(null);
+    const data = pendingResponse;
+    if (!data) return;
+    setPendingResponse(null);
+    _processResponse(data);
+  }, [pendingResponse]);
+
+  // Shared response processing (called either directly or after dice animation)
+  const _processResponse = useCallback((data) => {
+    // Extract arrow choices
+    let cleanNarration = data.narration || '';
+    const arrowChoices = [];
+    cleanNarration = cleanNarration.replace(/^(?:→|->)\s*(.+)$/gm, (_, choice) => { arrowChoices.push(choice.trim()); return ''; }).trim();
+    data.narration = cleanNarration;
+    if (arrowChoices.length > 0 && (!data.choices || data.choices.length === 0)) {
+      data.choices = arrowChoices;
+    }
+
+    // Build meta HTML
+    let metaHtml = '';
+    if (data.requires_roll) {
+      const badgeClass = data.outcome.includes('critical')
+        ? (data.outcome.includes('success') ? 'crit-success' : 'crit-failure')
+        : (data.outcome === 'success' ? 'success' : data.outcome === 'partial_success' ? 'partial' : 'failure');
+      const outcomeLabel = data.outcome.replace(/_/g, ' ').toUpperCase();
+      metaHtml += `<span class="dice-badge ${badgeClass}">🎲 ${data.roll} vs ${data.dice_threshold}+</span>`;
+      metaHtml += `<span class="dice-badge ${badgeClass}">${outcomeLabel}</span>`;
+      if (data.probability) metaHtml += `<span class="dice-badge">P: ${(data.probability * 100).toFixed(1)}%</span>`;
+    } else {
+      metaHtml += `<span class="dice-badge choice">📖 Narrative Choice</span>`;
+    }
+    if (data.current_beat) metaHtml += `<span class="beat-tag">📍 ${data.current_beat}</span>`;
+    if (data.state_changes?.items_gained?.length) {
+      data.state_changes.items_gained.forEach(item => metaHtml += `<span class="dice-badge choice">🎁 Loot: ${item}</span>`);
+    }
+    if (data.level_up?.new_level) metaHtml += `<span class="dice-badge crit-success">⬆️ Level ${data.level_up.new_level}!</span>`;
+
+    // NPC dialogue
+    let npcHtml = '';
+    if (data.npc_dialogue?.dialogue) {
+      const npcName = data.npc_dialogue.name || 'NPC';
+      const npcEmotion = data.npc_dialogue.emotion || '';
+      npcHtml = `<div class="npc-dialogue-box">
+        <div class="npc-name">💬 ${npcName}${npcEmotion ? ` (${npcEmotion})` : ''}</div>
+        <div class="npc-text">${data.npc_dialogue.dialogue}</div>
+        ${data.npc_dialogue.disposition_change ? `<div class="npc-disp">Disposition ${data.npc_dialogue.disposition_change > 0 ? '+' : ''}${data.npc_dialogue.disposition_change.toFixed(2)}</div>` : ''}
+      </div>`;
+    }
+
+    // Chat log
+    const fullContent = data.narration +
+      (metaHtml ? `<div class="meta">${metaHtml}</div>` : '') +
+      npcHtml +
+      (data.choices?.length ? `<div class="choices-box">${data.choices.map(c => `<button class="choice-btn" data-choice="${c.replace(/"/g, '&quot;')}">${c}</button>`).join('')}</div>` : '');
+    addMessage('system', fullContent);
+
+    // Combat data
+    const combatData = (data.combat_started && data.combat_data) ? data.combat_data : null;
+
+    setNarration({
+      html: data.narration + npcHtml,
+      meta: metaHtml,
+      choices: data.choices || null,
+      combatData: combatData,
+    });
+
+    // Update sidebar
+    setSidebar(prev => prev ? {
+      ...prev,
+      level: data.player_level || prev.level,
+      xp: data.player_xp || 0,
+      xpToNext: data.player_xp_to_next || 100,
+      hp: data.player_hp,
+      maxHp: data.max_hp || prev.maxHp,
+      mana: data.player_mana,
+      maxMana: data.max_mana || prev.maxMana,
+      beat: data.current_beat || prev.beat,
+      inventory: data.inventory || prev.inventory,
+      npcs: data.npcs || prev.npcs,
+      lastRoll: data.requires_roll ? {
+        type: 'rolled',
+        probability: data.probability,
+        threshold: data.dice_threshold,
+        roll: data.roll,
+        outcome: data.outcome,
+      } : { type: 'choice', outcome: data.outcome },
+      objective: data.campaign_objective || prev.objective,
+    } : prev);
+
+    setSessionInfo(prev => prev ? { ...prev, turn: data.turn_number } : prev);
+
+    // Game over states
+    if (data.game_over) {
+      setTimeout(() => { setGameOver(true); setCampaignEnded(true); }, 1500);
+    } else if (data.victory) {
+      setTimeout(() => { setVictory(true); setCampaignEnded(true); }, 1500);
+    } else if (data.campaign_ended && !combatData) {
+      setTimeout(() => setCampaignEnded(true), 1500);
+    }
+  }, [addMessage]);
+
   const submitAction = useCallback(async (actionText) => {
-    if (!sessionId || busy || combat) return;
+    if (!sessionId || busy || combat || gameOver) return;
     setBusy(true);
     setLoading(true);
 
@@ -97,91 +204,14 @@ export function useGame() {
       const data = await api.submitAction(sessionId, actionText);
       removeMessage(loadingId);
 
-      // Extract arrow choices
-      let cleanNarration = data.narration || '';
-      const arrowChoices = [];
-      cleanNarration = cleanNarration.replace(/^(?:→|->)\s*(.+)$/gm, (_, choice) => { arrowChoices.push(choice.trim()); return ''; }).trim();
-      data.narration = cleanNarration;
-      if (arrowChoices.length > 0 && (!data.choices || data.choices.length === 0)) {
-        data.choices = arrowChoices;
-      }
-
-      // Build meta HTML
-      let metaHtml = '';
-      if (data.requires_roll) {
-        const badgeClass = data.outcome.includes('critical')
-          ? (data.outcome.includes('success') ? 'crit-success' : 'crit-failure')
-          : (data.outcome === 'success' ? 'success' : data.outcome === 'partial_success' ? 'partial' : 'failure');
-        const outcomeLabel = data.outcome.replace(/_/g, ' ').toUpperCase();
-        metaHtml += `<span class="dice-badge ${badgeClass}">🎲 ${data.roll} vs ${data.dice_threshold}+</span>`;
-        metaHtml += `<span class="dice-badge ${badgeClass}">${outcomeLabel}</span>`;
-        if (data.probability) metaHtml += `<span class="dice-badge">P: ${(data.probability * 100).toFixed(1)}%</span>`;
+      // If there's a dice_result, show dice animation FIRST, then process
+      if (data.dice_result) {
+        setDiceResult(data.dice_result);
+        setPendingResponse(data);
+        // Response will be processed in onDiceAnimationComplete
       } else {
-        metaHtml += `<span class="dice-badge choice">📖 Narrative Choice</span>`;
-      }
-      if (data.current_beat) metaHtml += `<span class="beat-tag">📍 ${data.current_beat}</span>`;
-      if (data.state_changes?.items_gained?.length) {
-        data.state_changes.items_gained.forEach(item => metaHtml += `<span class="dice-badge choice">🎁 Loot: ${item}</span>`);
-      }
-      if (data.level_up?.new_level) metaHtml += `<span class="dice-badge crit-success">⬆️ Level ${data.level_up.new_level}!</span>`;
-
-      // NPC dialogue
-      let npcHtml = '';
-      if (data.npc_dialogue?.dialogue) {
-        const npcName = data.npc_dialogue.name || 'NPC';
-        const npcEmotion = data.npc_dialogue.emotion || '';
-        npcHtml = `<div class="npc-dialogue-box">
-          <div class="npc-name">💬 ${npcName}${npcEmotion ? ` (${npcEmotion})` : ''}</div>
-          <div class="npc-text">${data.npc_dialogue.dialogue}</div>
-          ${data.npc_dialogue.disposition_change ? `<div class="npc-disp">Disposition ${data.npc_dialogue.disposition_change > 0 ? '+' : ''}${data.npc_dialogue.disposition_change.toFixed(2)}</div>` : ''}
-        </div>`;
-      }
-
-      // Chat log
-      const fullContent = data.narration +
-        (metaHtml ? `<div class="meta">${metaHtml}</div>` : '') +
-        npcHtml +
-        (data.choices?.length ? `<div class="choices-box">${data.choices.map(c => `<button class="choice-btn" data-choice="${c.replace(/"/g, '&quot;')}">${c}</button>`).join('')}</div>` : '');
-      addMessage('system', fullContent);
-
-      // If combat is triggered, attach combat data to the narration
-      // The narration shows FIRST, combat starts when narration is dismissed
-      const combatData = (data.combat_started && data.combat_data) ? data.combat_data : null;
-
-      setNarration({
-        html: data.narration + npcHtml,
-        meta: metaHtml,
-        choices: data.choices || null,
-        combatData: combatData,
-      });
-
-      // Update sidebar
-      setSidebar(prev => prev ? {
-        ...prev,
-        level: data.player_level || prev.level,
-        xp: data.player_xp || 0,
-        xpToNext: data.player_xp_to_next || 100,
-        hp: data.player_hp,
-        maxHp: data.max_hp || prev.maxHp,
-        mana: data.player_mana,
-        maxMana: data.max_mana || prev.maxMana,
-        beat: data.current_beat || prev.beat,
-        inventory: data.inventory || prev.inventory,
-        npcs: data.npcs || prev.npcs,
-        lastRoll: data.requires_roll ? {
-          type: 'rolled',
-          probability: data.probability,
-          threshold: data.dice_threshold,
-          roll: data.roll,
-          outcome: data.outcome,
-        } : { type: 'choice', outcome: data.outcome },
-      } : prev);
-
-      setSessionInfo(prev => prev ? { ...prev, turn: data.turn_number } : prev);
-
-      // Campaign ended (no combat involved)
-      if (data.campaign_ended && !combatData) {
-        setTimeout(() => setCampaignEnded(true), 1500);
+        // No dice roll — process immediately
+        _processResponse(data);
       }
 
     } catch (e) {
@@ -191,7 +221,7 @@ export function useGame() {
       setLoading(false);
       setBusy(false);
     }
-  }, [sessionId, busy, combat, addMessage, removeMessage]);
+  }, [sessionId, busy, combat, gameOver, addMessage, removeMessage, _processResponse]);
 
   const resolveCombat = useCallback(async (result, combatState) => {
     if (!sessionId) return;
@@ -210,7 +240,11 @@ export function useGame() {
 
       setCombat(null);
 
-      if (result === 'victory') {
+      if (data.game_over) {
+        // Player died in combat
+        addMessage('system', `<strong>💀 Fallen...</strong><br/>${data.narration || 'The darkness claims you.'}`);
+        setTimeout(() => { setGameOver(true); setCampaignEnded(true); }, 1000);
+      } else if (result === 'victory') {
         let msg = '<strong>🏆 Victory!</strong>';
         if (data.rewards?.xp) msg += `<br/>+${data.rewards.xp} XP`;
         if (data.rewards?.loot_descriptions) data.rewards.loot_descriptions.forEach(l => msg += `<br/>${l}`);
@@ -220,6 +254,10 @@ export function useGame() {
         if (data.narration) {
           addMessage('system', data.narration);
           setNarration({ html: data.narration, meta: null, choices: data.choices || null, combatData: null });
+        }
+
+        if (data.victory) {
+          setTimeout(() => { setVictory(true); setCampaignEnded(true); }, 1500);
         }
       } else {
         addMessage('system', '<strong>💀 Defeat...</strong><br/>The darkness claims you.');
@@ -239,9 +277,12 @@ export function useGame() {
         xp: data.player_xp ?? prev.xp,
         xpToNext: data.player_xp_to_next || prev.xpToNext,
         inventory: data.inventory || prev.inventory,
+        objective: data.campaign_objective || prev.objective,
       } : prev);
 
-      if (data.campaign_ended) setTimeout(() => setCampaignEnded(true), 1500);
+      if (data.campaign_ended && !data.game_over && !data.victory) {
+        setTimeout(() => setCampaignEnded(true), 1500);
+      }
 
     } catch (e) {
       setCombat(null);
@@ -250,7 +291,6 @@ export function useGame() {
   }, [sessionId, addMessage]);
 
   const dismissNarration = useCallback(() => {
-    // If narration had combat data, start combat now
     setNarration(prev => {
       if (prev?.combatData) {
         const cd = prev.combatData;
@@ -263,16 +303,13 @@ export function useGame() {
     });
   }, []);
 
-  // When narration is set to null and we have pending combat, start it
-  const handleNarrationDismiss = useCallback(() => {
-    dismissNarration();
-  }, [dismissNarration]);
-
   return {
     sessionId, sessionInfo, messages, sidebar, loading, narration,
-    combat, campaignEnded, theme, busy,
+    combat, campaignEnded, gameOver, victory, theme, busy,
+    diceResult, pendingResponse,
     startSession, submitAction, resolveCombat,
-    dismissNarration: handleNarrationDismiss,
+    dismissNarration,
+    onDiceAnimationComplete,
     setCombat, addMessage,
   };
 }

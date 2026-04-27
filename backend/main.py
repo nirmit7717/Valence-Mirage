@@ -170,6 +170,11 @@ class ActionResponse(BaseModel):
     combat_beat_available: bool = False
     current_act: int | None = None
     campaign_ended: bool = False
+    # ── New flags ──
+    game_over: bool = False
+    victory: bool = False
+    campaign_objective: str | None = None
+    dice_result: dict | None = None
 
 
 app.mount("/static", StaticFiles(directory="static"), name="static")
@@ -247,6 +252,13 @@ async def create_session(req: NewSessionRequest = NewSessionRequest()):
     session.world_state["location"] = blueprint.setting
     session.world_state["situation"] = blueprint.premise
 
+    # Derive campaign objective from blueprint
+    campaign_objective = blueprint.premise
+    if blueprint.possible_endings:
+        # Use the first possible ending as the objective text
+        campaign_objective = blueprint.possible_endings[0]
+    session.world_state["campaign_objective"] = campaign_objective
+
     # Track current beat for combat triggers
     if blueprint.acts and blueprint.acts[0].beats:
         session.world_state["current_act"] = blueprint.acts[0].act_id
@@ -301,6 +313,7 @@ async def create_session(req: NewSessionRequest = NewSessionRequest()):
         "world_state": {
             "location": session.world_state.get("location", ""),
             "situation": session.world_state.get("situation", ""),
+            "campaign_objective": session.world_state.get("campaign_objective", ""),
         },
         "opening_narration": clean_narration(opening_narration),
         "choices": extract_choices(opening_narration),
@@ -386,6 +399,8 @@ async def submit_action(session_id: str, req: ActionRequest):
     # If campaign has ended, reject further actions
     if session.world_state.get("campaign_ended", False):
         raise HTTPException(status_code=400, detail="Campaign has ended. Start a new adventure.")
+
+    campaign_objective = session.world_state.get("campaign_objective", "")
 
     stats_summary = (
         f"STR={session.player.stats.strength} "
@@ -596,9 +611,11 @@ async def submit_action(session_id: str, req: ActionRequest):
             combat_started=True,
             combat_data=combat_data,
             campaign_ended=False,
+            game_over=False,
+            victory=False,
+            campaign_objective=campaign_objective,
+            dice_result=None,
         )
-
-    # ─── No-roll path (narrative choice) ───
     if not intent.requires_roll:
         try:
             narration = await narrator.narrate(
@@ -679,6 +696,10 @@ async def submit_action(session_id: str, req: ActionRequest):
             combat_started=False,
             combat_data=None,
             campaign_ended=session.world_state.get("campaign_ended", False),
+            game_over=False,
+            victory=session.world_state.get("campaign_ended", False),
+            campaign_objective=campaign_objective,
+            dice_result=None,
         )
 
     # ─── Roll path (probabilistic action) ───
@@ -724,6 +745,52 @@ async def submit_action(session_id: str, req: ActionRequest):
     # 7. State changes
     state_changes = _compute_state_changes(intent, outcome_result, roll)
     level_up = sm.apply_changes(session, intent, state_changes, outcome_result)
+
+    # 7b. Check for player death
+    is_dead, death_message = _check_player_death(session)
+    if is_dead:
+        session.world_state["campaign_ended"] = True
+        session.world_state["status"] = "failed"
+        session.turn_number += 1
+        turn = Turn(
+            turn_number=session.turn_number,
+            player_input=req.action,
+            intent=intent,
+            score=score,
+            roll=roll,
+            outcome=Outcome(result="player_death", roll=roll, threshold=score.dice_threshold, narration=death_message, state_changes=state_changes),
+        )
+        session.turn_history.append(turn)
+        await db.save_turn(session_id, turn)
+        await db.save_session(session)
+
+        logger.info(f"PLAYER DEATH: {session.player.name} at turn {session.turn_number}")
+
+        return ActionResponse(
+            turn_number=session.turn_number, intent=intent, requires_roll=True,
+            probability=score.probability, dice_threshold=score.dice_threshold, roll=roll,
+            outcome="player_death", narration=death_message, state_changes=state_changes,
+            player_hp=0, player_mana=session.player.mana,
+            player_level=session.player.level, player_xp=session.player.xp,
+            player_xp_to_next=session.player.xp_to_next,
+            max_hp=session.player.max_hp, max_mana=session.player.max_mana,
+            inventory=[{"name": i.name, "type": i.item_type} for i in session.player.inventory],
+            level_up={}, current_beat=current_beat_title, npc_dialogue=None, npcs=[],
+            choices=[], combat_started=False, combat_data=None, campaign_ended=True,
+            game_over=True, victory=False, campaign_objective=campaign_objective,
+            dice_result={"rolled": roll, "target": score.dice_threshold,
+                        "success": False, "critical": outcome_result == "critical_failure",
+                        "type": "check"},
+        )
+
+    # 7c. Build dice_result for frontend animation
+    dice_result_payload = {
+        "rolled": roll,
+        "target": score.dice_threshold,
+        "success": outcome_result in ("success", "critical_success", "partial_success"),
+        "critical": outcome_result in ("critical_success", "critical_failure"),
+        "type": "attack" if intent.action_type in ("attack", "cast_spell") else "skill" if intent.action_type in ("persuade", "intimidate", "deceive") else "check",
+    }
 
 
     # 10. Update world state
@@ -868,6 +935,10 @@ async def submit_action(session_id: str, req: ActionRequest):
         combat_started=combat_started,
         combat_data=combat_data,
         campaign_ended=session.world_state.get("campaign_ended", False),
+        game_over=False,
+        victory=session.world_state.get("campaign_ended", False),
+        campaign_objective=campaign_objective,
+        dice_result=dice_result_payload,
     )
 
 
@@ -1011,7 +1082,7 @@ async def resolve_combat(session_id: str, req: CombatResolveRequest):
     elif req.result == "defeat":
         try:
             narration = await narrator.narrate_combat_action(
-                action_description=f"The player has been defeated by a {req.enemy_name}. Describe the bitter aftermath. The player barely survives with {req.player_hp} HP remaining.",
+                action_description=f"The player has been defeated by a {req.enemy_name}. Describe the bitter aftermath. The player barely survives.",
                 result="defeat",
                 character_class=session.player.character_class,
             )
@@ -1020,6 +1091,21 @@ async def resolve_combat(session_id: str, req: CombatResolveRequest):
         
         choices = extract_choices(narration)
         session.world_state["situation"] = narration
+
+    # ── Check player death after combat ──
+    is_dead, death_message = _check_player_death(session)
+    game_over = False
+    victory = False
+    if is_dead:
+        game_over = True
+        session.world_state["campaign_ended"] = True
+        session.world_state["status"] = "failed"
+        narration = death_message
+        choices = []
+
+    campaign_ended_flag = session.world_state.get("campaign_ended", False)
+    if campaign_ended_flag and not is_dead:
+        victory = True
 
     # Clean up combat state
     session.world_state.pop("combat", None)
@@ -1043,7 +1129,10 @@ async def resolve_combat(session_id: str, req: CombatResolveRequest):
         "max_hp": session.player.max_hp,
         "max_mana": session.player.max_mana,
         "inventory": [{"name": i.name, "type": i.item_type} for i in session.player.inventory],
-        "campaign_ended": session.world_state.get("campaign_ended", False),
+        "campaign_ended": campaign_ended_flag,
+        "game_over": game_over,
+        "victory": victory,
+        "campaign_objective": session.world_state.get("campaign_objective", ""),
     }
 
 
@@ -1130,7 +1219,22 @@ def _compute_state_changes(intent: ActionIntent, outcome: str, roll: int) -> Sta
         if intent.risk in ("high", "extreme"):
             changes.status_effects_added.append("stunned")
 
+    # Debug logging for stat changes
+    if changes.hp_delta != 0 or changes.mana_delta != 0:
+        logger.info(f"State change: hp_delta={changes.hp_delta}, mana_delta={changes.mana_delta}, trigger={outcome}")
+
     return changes
+
+
+def _check_player_death(session) -> tuple[bool, str]:
+    """Check if the player has died. Returns (is_dead, failure_message)."""
+    if session.player.hp <= 0:
+        return True, (
+            f"The darkness closes in around {session.player.name}. "
+            f"Your wounds are too grave. The adventure ends here, "
+            f"fallen hero."
+        )
+    return False, ""
 
 
 if __name__ == "__main__":

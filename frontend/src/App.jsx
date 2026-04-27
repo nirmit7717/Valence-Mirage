@@ -7,6 +7,7 @@ import FloatingHUD from './components/FloatingHUD';
 import CombatOverlay from './components/CombatOverlay';
 import LoadingOverlay from './components/LoadingOverlay';
 import CampaignEndOverlay from './components/CampaignEndOverlay';
+import DiceRoll from './components/DiceRoll';
 import SettingsPanel from './components/SettingsPanel';
 
 injectAmbienceCSS();
@@ -34,6 +35,7 @@ export default function App() {
   }, [game]);
 
   const handleChoice = useCallback((choice) => {
+    if (game.gameOver) return;
     game.submitAction(choice);
   }, [game]);
 
@@ -54,21 +56,35 @@ export default function App() {
                 {game.sessionInfo ? `Turn ${game.sessionInfo.turn} | ${game.sessionInfo.title}` : ''}
               </span>
             </div>
-            {!game.combat && !game.narration && (
+            {!game.combat && !game.narration && !game.diceResult && (
               <div className="stage-waiting">
-                <div className="stage-waiting-text">Awaiting your next move...</div>
+                <div className="stage-waiting-text">
+                  {game.gameOver ? 'Your journey has ended...' : 'Awaiting your next move...'}
+                </div>
               </div>
             )}
           </div>
+
+          {/* Dice roll animation — shows BEFORE narration */}
+          <DiceRoll
+            diceResult={game.diceResult}
+            onComplete={game.onDiceAnimationComplete}
+          />
+
           <NarrativeCard
             narration={game.narration}
             onChoice={handleChoice}
             onDismiss={game.dismissNarration}
             animationsEnabled={animationsEnabled}
             textSpeed={textSpeed}
+            inputDisabled={game.gameOver}
           />
           <CombatOverlay combat={game.combat} onResolve={game.resolveCombat} animationsEnabled={animationsEnabled} />
-          <CampaignEndOverlay show={game.campaignEnded} />
+          <CampaignEndOverlay
+            show={game.campaignEnded}
+            victory={game.victory}
+            gameOver={game.gameOver}
+          />
           <LoadingOverlay show={game.loading} />
         </>
       )}

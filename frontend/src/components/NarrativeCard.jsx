@@ -3,7 +3,7 @@ import { useTypewriter } from '../utils/typewriter';
 import { chunkNarration } from '../utils/chunker';
 import * as tts from '../utils/tts';
 
-export default function NarrativeCard({ narration, onChoice, onDismiss, animationsEnabled, textSpeed }) {
+export default function NarrativeCard({ narration, onChoice, onDismiss, animationsEnabled, textSpeed, inputDisabled }) {
   const [phase, setPhase] = useState('hidden'); // hidden | fading-in | visible | fading-out
   const [displayedText, setDisplayedText] = useState('');
   const [chunkIndex, setChunkIndex] = useState(0);
@@ -129,12 +129,12 @@ export default function NarrativeCard({ narration, onChoice, onDismiss, animatio
         {/* Actions */}
         <div className="nc-actions">
           {showChoices && narration?.choices?.map((c, i) => (
-            <button key={i} className="nc-choice-btn" onClick={(e) => { e.stopPropagation(); handleChoice(c); }}>
+            <button key={i} className="nc-choice-btn" onClick={(e) => { e.stopPropagation(); handleChoice(c); }} disabled={inputDisabled}>
               {c}
             </button>
           ))}
 
-          {showChoices && (
+          {showChoices && !inputDisabled && (
             <div className="nc-custom-action" onClick={(e) => e.stopPropagation()}>
               <input
                 type="text"

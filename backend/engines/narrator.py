@@ -100,14 +100,24 @@ class Narrator:
         # Player inventory
         inv_names = ", ".join(i.name for i in player.inventory[:8]) if player.inventory else "empty"
 
+        # HP/mana descriptive state (never send raw numbers to LLM)
+        hp_frac = player.hp / player.max_hp if player.max_hp > 0 else 1.0
+        mana_frac = player.mana / player.max_mana if player.max_mana > 0 else 1.0
+        if hp_frac > 0.8: hp_desc = "healthy"
+        elif hp_frac > 0.5: hp_desc = "bruised and battered"
+        elif hp_frac > 0.25: hp_desc = "wounded, blood running freely"
+        else: hp_desc = "at death's door, barely conscious"
+        if mana_frac > 0.8: mana_desc = "brimming with energy"
+        elif mana_frac > 0.5: mana_desc = "moderately taxed"
+        elif mana_frac > 0.25: mana_desc = "running thin, nearly spent"
+        else: mana_desc = "dangerously low"
+
         user_msg = (
             f"Action: {intent.description}\n"
             f"Type: {intent.action_type}\n"
             f"Outcome: {outcome_result}\n"
             f"Dice: rolled {roll} vs threshold {threshold}\n"
-            f"Player: {player.name} (HP {player.hp}/{player.max_hp}, "
-            f"Mana {player.mana}/{player.max_mana}, "
-            f"Level {player.level})\n"
+            f"Player: {player.name} (Level {player.level}, physically {hp_desc}, arcane reserves {mana_desc})\n"
             f"Inventory: {inv_names}\n"
             f"Location: {world_state.get('location', 'unknown')}\n"
             f"Situation: {world_state.get('situation', '')[-500:]}\n"

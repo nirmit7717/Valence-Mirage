@@ -60,6 +60,16 @@ export default function FloatingHUD({ data }) {
         <div className="hud-stats-title">📍 {data.beat || '—'}</div>
       </div>
 
+      {data.objective && (
+        <>
+          <div className="hud-divider" />
+          <div className="hud-section">
+            <div className="hud-stats-title">🎯 Objective</div>
+            <div className="hud-objective">{data.objective}</div>
+          </div>
+        </>
+      )}
+
       {data.lastRoll && (
         <>
           <div className="hud-divider" />
