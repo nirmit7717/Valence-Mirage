@@ -142,4 +142,66 @@ This document tracks all significant architectural improvements, feature additio
 - **Campaign Completion Detection Fix**: `advance_beat()` doesn't increment past the final beat, so the old `_is_campaign_complete()` check (which only checked `> max_beat`) never triggered. Updated to use "advance then check if position changed" pattern — campaign ends correctly when the final beat is completed.
 
 ---
-*Status: All changes verified and server tested successfully.*
+
+## v0.6.0 — Game Logic Fixes & Dice Animation System (2026-04-28)
+
+### 💀 Player Death Detection (Issue #1)
+- **Backend**: `_check_player_death()` helper — detects HP ≤ 0 after state changes and after combat resolve
+- **Death path**: Sets `game_over=true`, `campaign_ended=true`, `status="failed"`, returns death narration
+- **Frontend**: `gameOver` state blocks all further input, CampaignEndOverlay shows red "💀 Fallen" screen
+- **Combat death**: If player HP = 0 after combat, triggers game over (not just "defeat")
+
+### 🎯 Campaign Objective (Issue #2)
+- **Objective derived** from `blueprint.possible_endings[0]` or `blueprint.premise` at session creation
+- **Stored in** `session.world_state["campaign_objective"]`
+- **Passed in** every `ActionResponse` and combat resolve response
+- **Displayed in** FloatingHUD sidebar as "🎯 Objective" section
+
+### 🎭 Narrator Immersion Rules (Issue #3)
+- **HP/mana replaced** with descriptive terms in narrator prompts:
+  - HP: healthy / bruised and battered / wounded, blood running freely / at death's door, barely conscious
+  - Mana: brimming with energy / moderately taxed / running thin, nearly spent / dangerously low
+- **5 new IMMERSION RULES** in narrator prompt:
+  - Never mention exact HP/mana numbers
+  - Never use meta-language about choices ("you have 3 options")
+  - Use descriptive language for physical state
+  - End with natural prompts ("What will you do?")
+- **Debug logging** for stat changes (`hp_delta`, `mana_delta`, trigger)
+- **Combat defeat narration** no longer leaks HP numbers to LLM
+
+### 🎲 Dice Roll Animation System (New Feature)
+- **Backend `dice_result` field** in action responses:
+  ```json
+  { "rolled": 14, "target": 10, "success": true, "critical": false, "type": "attack" }
+  ```
+- **Only populated when a roll actually occurs** — never faked
+- **DiceRoll component**: Full-screen overlay animation triggered BEFORE narration card
+  - 12-frame number cycling (~1s), landing on actual roll value
+  - Shows roll type (⚔️ Attack / ✦ Skill / 🔍 Check)
+  - Success/failure/critical color coding (green/red/gold)
+- **useGame flow**: API response → `dice_result` → animation → `onDiceAnimationComplete()` → process narration
+
+### 🏳️ Clean Response Structure
+- Every response now includes: `game_over`, `victory`, `campaign_objective`, `dice_result` (optional)
+- All 3 return paths in action handler updated with new fields
+- Combat resolve endpoint returns `game_over`, `victory`, `campaign_objective`
+
+---
+
+## v0.6.1 — Combat Dice Animation & Post-Combat Narration Fix (2026-04-28)
+
+### ⚔️ Combat Dice Animation
+- **Inline CombatDice component** in the combat arena
+- Shows for every player attack, player skill, and enemy action
+- Number cycling (~0.5s) → final roll → HIT/MISS/CRIT with color coding
+- **Action lock** (`actionLockRef`) prevents double-clicks during animation
+- **combat.js updated**: `resolvePlayerAttack`, `resolvePlayerSkill`, `resolveEnemyTurn` return `diceInfo` metadata
+- No dice shown for item uses or support abilities (no roll involved)
+
+### 📜 Post-Combat Narration Fix
+- **Victory path**: Narration card now properly shows with choices extracted from arrow syntax (`→ ...`)
+- **All paths** (victory/defeat/death) correctly set narration state for story continuation
+- **Choices from backend** combat narration properly parsed and displayed as buttons
+
+---
+*Status: All changes verified, server tested, pushed to GitHub.*
