@@ -1,6 +1,42 @@
 import { useState, useCallback, useEffect, useRef } from 'react';
 import { rollD20, rollDice, getWeaponDice, tickEffects, resolvePlayerAttack, resolvePlayerSkill, resolvePlayerItem, resolveEnemyTurn } from '../utils/combat';
 
+// ─── Inline Combat Dice Animation ───
+function CombatDice({ roll, target, success, crit, onDone }) {
+  const [phase, setPhase] = useState('spin');
+  const [display, setDisplay] = useState('?');
+
+  useEffect(() => {
+    let count = 0;
+    const max = 8;
+    const iv = setInterval(() => {
+      count++;
+      if (count >= max) {
+        setDisplay(roll);
+        clearInterval(iv);
+        setTimeout(() => { setPhase('show'); setTimeout(() => onDone?.(), 400); }, 150);
+      } else {
+        setDisplay(Math.floor(Math.random() * 20) + 1);
+      }
+    }, 60);
+    return () => clearInterval(iv);
+  }, [roll, target, onDone]);
+
+  return (
+    <div className={`combat-dice ${success ? 'cd-success' : 'cd-fail'} ${crit ? 'cd-crit' : ''}`}>
+      {phase === 'spin' ? (
+        <span className="cd-num cd-spinning">🎲 {display}</span>
+      ) : (
+        <>
+          <span className={`cd-num ${success ? 'cd-green' : 'cd-red'}`}>{roll}</span>
+          <span className="cd-vs">vs {target}</span>
+          <span className={`cd-label ${success ? 'cd-green' : 'cd-red'}`}>{crit ? (success ? 'CRIT!' : 'CRIT FAIL!') : success ? 'HIT' : 'MISS'}</span>
+        </>
+      )}
+    </div>
+  );
+}
+
 export default function CombatOverlay({ combat, onResolve, animationsEnabled }) {
   const [state, setState] = useState(null);
   const [menu, setMenu] = useState('main'); // main | attack | skill | item
@@ -10,7 +46,9 @@ export default function CombatOverlay({ combat, onResolve, animationsEnabled }) 
   const [ending, setEnding] = useState(false);
   const [dmgFloats, setDmgFloats] = useState([]);
   const [flashes, setFlashes] = useState({});
+  const [activeDice, setActiveDice] = useState(null); // { roll, target, success, crit }
   const floatsRef = useRef(0);
+  const actionLockRef = useRef(false);
 
   // Initialize combat
   useEffect(() => {
@@ -21,6 +59,8 @@ export default function CombatOverlay({ combat, onResolve, animationsEnabled }) 
     setTurnPhase('player');
     setEntering(true);
     setEnding(false);
+    setActiveDice(null);
+    actionLockRef.current = false;
     setTimeout(() => setEntering(false), 500);
   }, [combat]);
 
@@ -58,36 +98,51 @@ export default function CombatOverlay({ combat, onResolve, animationsEnabled }) 
     return false;
   }, [addLog, onResolve]);
 
+  const showDiceThen = useCallback((diceInfo, callback) => {
+    if (!diceInfo) { callback(); return; }
+    setActiveDice(diceInfo);
+    // Callback fires after CombatDice's onDone (~1.1s)
+    // We delay slightly to let the dice land visually
+    setTimeout(callback, 1100);
+  }, []);
+
   // Player actions
   const doAttack = useCallback((weaponName, dice) => {
-    if (!state || state.resolved) return;
+    if (!state || state.resolved || actionLockRef.current) return;
+    actionLockRef.current = true;
     const s = { ...state, enemy: { ...state.enemy }, player: { ...state.player } };
     const result = resolvePlayerAttack(s, weaponName, dice);
-    addLog(result.log, result.type === 'crit' ? 'crit' : 'player');
-    if (result.damage) showDmg(result.damage.target, result.damage.amount, result.damage.crit ? 'crit' : result.damage.heal ? 'heal' : 'damage');
-    if (result.flash) flashCard(result.flash);
-    setState(s);
-    if (checkDeath(s)) return;
-
-    // Enemy turn
-    setTimeout(() => doEnemy(s), 600);
-  }, [state, addLog, showDmg, flashCard, checkDeath]);
+    showDiceThen(result.diceInfo, () => {
+      addLog(result.log, result.type === 'crit' ? 'crit' : 'player');
+      if (result.damage) showDmg(result.damage.target, result.damage.amount, result.damage.crit ? 'crit' : result.damage.heal ? 'heal' : 'damage');
+      if (result.flash) flashCard(result.flash);
+      setState(s);
+      actionLockRef.current = false;
+      if (checkDeath(s)) return;
+      setTimeout(() => doEnemy(s), 600);
+    });
+  }, [state, addLog, showDmg, flashCard, checkDeath, showDiceThen]);
 
   const doSkill = useCallback((ability) => {
-    if (!state || state.resolved) return;
+    if (!state || state.resolved || actionLockRef.current) return;
     if (ability.mana_cost > state.player.mana) { addLog(`Not enough mana for ${ability.name}!`, 'system'); return; }
+    actionLockRef.current = true;
     const s = { ...state, enemy: { ...state.enemy }, player: { ...state.player, status_effects: [...state.player.status_effects], mana: state.player.mana - ability.mana_cost }, enemy: { ...state.enemy, status_effects: [...state.enemy.status_effects] } };
     const result = resolvePlayerSkill(s, ability);
-    addLog(result.log, result.type === 'crit' ? 'crit' : 'player');
-    if (result.damage) showDmg(result.damage.target, result.damage.amount, result.damage.crit ? 'crit' : result.damage.heal ? 'heal' : 'damage');
-    if (result.flash) flashCard(result.flash);
-    setState(s);
-    if (checkDeath(s)) return;
-    setTimeout(() => doEnemy(s), 600);
-  }, [state, addLog, showDmg, flashCard, checkDeath]);
+    showDiceThen(result.diceInfo, () => {
+      addLog(result.log, result.type === 'crit' ? 'crit' : 'player');
+      if (result.damage) showDmg(result.damage.target, result.damage.amount, result.damage.crit ? 'crit' : result.damage.heal ? 'heal' : 'damage');
+      if (result.flash) flashCard(result.flash);
+      setState(s);
+      actionLockRef.current = false;
+      if (checkDeath(s)) return;
+      setTimeout(() => doEnemy(s), 600);
+    });
+  }, [state, addLog, showDmg, flashCard, checkDeath, showDiceThen]);
 
   const doItem = useCallback((itemName, hpRestore, manaRestore) => {
-    if (!state || state.resolved) return;
+    if (!state || state.resolved || actionLockRef.current) return;
+    actionLockRef.current = true;
     const s = { ...state, player: { ...state.player }, inventory: [...state.inventory] };
     const results = resolvePlayerItem(s, itemName, hpRestore, manaRestore);
     results.forEach(r => {
@@ -95,6 +150,7 @@ export default function CombatOverlay({ combat, onResolve, animationsEnabled }) 
       if (r.damage) showDmg(r.damage.target, r.damage.amount, 'heal');
     });
     setState(s);
+    actionLockRef.current = false;
     setTimeout(() => doEnemy(s), 600);
   }, [state, addLog, showDmg]);
 
@@ -107,17 +163,18 @@ export default function CombatOverlay({ combat, onResolve, animationsEnabled }) 
       if (result.victory) { s.resolved = true; addLog(`🏆 ${s.enemy.name} is defeated!`, 'crit'); setEnding(true); setTimeout(() => onResolve('victory', s), 800); }
       return;
     }
-    addLog(result.log, result.type === 'crit' ? 'crit' : 'enemy');
-    if (result.damage) showDmg(result.damage.target, result.damage.amount, result.damage.crit ? 'crit' : 'damage');
-    if (result.flash) flashCard(result.flash);
-    setState({ ...s });
-    if (checkDeath(s)) return;
-
-    setTimeout(() => {
-      setTurnPhase('player');
-      setMenu('main');
-    }, 300);
-  }, [addLog, showDmg, flashCard, checkDeath, onResolve]);
+    showDiceThen(result.diceInfo, () => {
+      addLog(result.log, result.type === 'crit' ? 'crit' : 'enemy');
+      if (result.damage) showDmg(result.damage.target, result.damage.amount, result.damage.crit ? 'crit' : 'damage');
+      if (result.flash) flashCard(result.flash);
+      setState({ ...s });
+      if (checkDeath(s)) return;
+      setTimeout(() => {
+        setTurnPhase('player');
+        setMenu('main');
+      }, 300);
+    });
+  }, [addLog, showDmg, flashCard, checkDeath, onResolve, showDiceThen]);
 
   if (!combat || !state) return null;
 
@@ -178,6 +235,17 @@ export default function CombatOverlay({ combat, onResolve, animationsEnabled }) 
             </div>
           ))}
         </div>
+
+        {/* Combat Dice Animation */}
+        {activeDice && (
+          <CombatDice
+            roll={activeDice.roll}
+            target={activeDice.target}
+            success={activeDice.success}
+            crit={activeDice.crit}
+            onDone={() => setActiveDice(null)}
+          />
+        )}
 
         {/* Controls */}
         <div className="combat-controls">

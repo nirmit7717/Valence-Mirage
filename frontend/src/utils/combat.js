@@ -71,12 +71,15 @@ export function resolvePlayerAttack(state, weaponName, dice) {
   const threshold = 8 + state.enemy.armor;
   const isCrit = roll === 20;
   const isMiss = roll === 1;
+  const hit = isCrit || total >= threshold;
+
+  const diceInfo = { roll, target: threshold, success: hit, crit: isCrit || isMiss };
 
   if (isMiss) {
-    return { log: `You swing ${weaponName}... MISS! (rolled 1)`, type: 'player', flash: 'player' };
+    return { log: `You swing ${weaponName}... MISS! (rolled 1)`, type: 'player', flash: 'player', diceInfo };
   }
-  if (total < threshold && !isCrit) {
-    return { log: `Your ${weaponName} glances off their armor. (${roll}+${atkBonus.toFixed(1)} vs AC ${threshold})`, type: 'player', flash: 'player' };
+  if (!hit) {
+    return { log: `Your ${weaponName} glances off their armor. (${roll}+${atkBonus.toFixed(1)} vs AC ${threshold})`, type: 'player', flash: 'player', diceInfo };
   }
 
   let dmg = rollDice(dice);
@@ -89,6 +92,7 @@ export function resolvePlayerAttack(state, weaponName, dice) {
     type: isCrit ? 'crit' : 'player',
     damage: { target: 'enemy', amount: dmg, crit: isCrit },
     flash: 'enemy',
+    diceInfo,
   };
 }
 
@@ -117,8 +121,8 @@ export function resolvePlayerSkill(state, ability) {
   const isCrit = roll === 20;
   const isMiss = roll === 1;
 
-  if (isMiss) return { log: `${ability.name} misses! (rolled 1)`, type: 'player', flash: 'player' };
-  if (total < threshold && !isCrit) return { log: `${ability.name} glances off armor. (${roll}+${atkBonus.toFixed(1)} vs AC ${threshold})`, type: 'player', flash: 'player' };
+  if (isMiss) return { log: `${ability.name} misses! (rolled 1)`, type: 'player', flash: 'player', diceInfo: { roll: 1, target: threshold, success: false, crit: true } };
+  if (total < threshold && !isCrit) return { log: `${ability.name} glances off armor. (${roll}+${atkBonus.toFixed(1)} vs AC ${threshold})`, type: 'player', flash: 'player', diceInfo: { roll, target: threshold, success: false, crit: false } };
 
   const dice = ability.damage_dice || '1d6';
   let dmg = rollDice(dice);
@@ -135,6 +139,7 @@ export function resolvePlayerSkill(state, ability) {
     type: isCrit ? 'crit' : 'player',
     damage: { target: 'enemy', amount: dmg, crit: isCrit },
     flash: 'enemy',
+    diceInfo: { roll, target: threshold, success: true, crit: isCrit },
   };
 }
 
@@ -199,8 +204,8 @@ export function resolveEnemyTurn(state) {
   const isCrit = roll === 20;
   const isMiss = roll === 1;
 
-  if (isMiss) return { log: `${e.name}'s ${actionName} misses!`, type: 'enemy' };
-  if (total < threshold && !isCrit) return { log: `${e.name}'s ${actionName} glances off your armor.`, type: 'enemy' };
+  if (isMiss) return { log: `${e.name}'s ${actionName} misses!`, type: 'enemy', diceInfo: { roll: 1, target: threshold, success: false, crit: true } };
+  if (total < threshold && !isCrit) return { log: `${e.name}'s ${actionName} glances off your armor.`, type: 'enemy', diceInfo: { roll, target: threshold, success: false, crit: false } };
 
   let dmg = damageDice ? rollDice(damageDice) : Math.floor(Math.random() * 6) + 1 + Math.floor(e.attack_bonus);
   if (isCrit) dmg = Math.floor(dmg * 1.5);
@@ -215,5 +220,6 @@ export function resolveEnemyTurn(state) {
     type: isCrit ? 'crit' : 'enemy',
     damage: { target: 'player', amount: dmg, crit: isCrit },
     flash: 'player',
+    diceInfo: { roll, target: threshold, success: hit, crit: isCrit },
   };
 }

@@ -243,7 +243,10 @@ export function useGame() {
       if (data.game_over) {
         // Player died in combat
         addMessage('system', `<strong>💀 Fallen...</strong><br/>${data.narration || 'The darkness claims you.'}`);
-        setTimeout(() => { setGameOver(true); setCampaignEnded(true); }, 1000);
+        if (data.narration) {
+          setNarration({ html: data.narration, meta: null, choices: null, combatData: null });
+        }
+        setTimeout(() => { setGameOver(true); setCampaignEnded(true); }, 1500);
       } else if (result === 'victory') {
         let msg = '<strong>🏆 Victory!</strong>';
         if (data.rewards?.xp) msg += `<br/>+${data.rewards.xp} XP`;
@@ -253,17 +256,22 @@ export function useGame() {
 
         if (data.narration) {
           addMessage('system', data.narration);
-          setNarration({ html: data.narration, meta: null, choices: data.choices || null, combatData: null });
+          // Show narration card with post-combat story + choices
+          const arrowChoices = [];
+          let cleanNarr = (data.narration || '').replace(/^(?:→|->)\s*(.+)$/gm, (_, choice) => { arrowChoices.push(choice.trim()); return ''; }).trim();
+          const choices = arrowChoices.length > 0 ? arrowChoices : (data.choices || null);
+          setNarration({ html: cleanNarr, meta: null, choices, combatData: null });
         }
 
         if (data.victory) {
           setTimeout(() => { setVictory(true); setCampaignEnded(true); }, 1500);
         }
       } else {
+        // Defeat (survived)
         addMessage('system', '<strong>💀 Defeat...</strong><br/>The darkness claims you.');
         if (data.narration) {
           addMessage('system', data.narration);
-          setNarration({ html: data.narration, meta: null, choices: null, combatData: null });
+          setNarration({ html: data.narration, meta: null, choices: data.choices || null, combatData: null });
         }
       }
 
