@@ -19,6 +19,8 @@ class ProbabilityEngine:
         intent: ActionIntent,
         player: PlayerState,
         similarity: float = 0.5,  # Default mid-range when no RAG (Phase 1)
+        context_alignment: float = 0.0,  # -1.0 to +1.0: how well action fits current narrative
+        status_effects: list[str] | None = None,  # Active status effect names on player
     ) -> ProbabilityScore:
         """Calculate probability score for a player action.
 
@@ -65,6 +67,25 @@ class ProbabilityEngine:
         else:
             breakdown.novelty_bonus = 0.0
 
+        # --- Context alignment ---
+        breakdown.context_alignment = context_alignment
+
+        # --- Status effect modifier ---
+        se_mod = 0.0
+        if status_effects:
+            for eff in status_effects:
+                name = eff.lower()
+                if name == "focus":
+                    se_mod += 0.15  # Focused → better outcomes
+                elif name == "weaken":
+                    se_mod -= 0.1   # Weakened → harder
+                elif name in ("bleed", "poisoned", "burning"):
+                    se_mod -= 0.05  # DoT effects → slight penalty
+                elif name == "blocking":
+                    if intent.action_type in ("defend", "block"):
+                        se_mod += 0.1  # Blocking + defending = synergy
+        breakdown.status_effect_modifier = se_mod
+
         # --- Weighted sum ---
         raw_score = (
             config.DEFAULT_WEIGHTS["similarity"] * breakdown.similarity
@@ -73,6 +94,8 @@ class ProbabilityEngine:
             + config.DEFAULT_WEIGHTS["mana_penalty"] * breakdown.mana_penalty
             + config.DEFAULT_WEIGHTS["saturation_penalty"] * breakdown.saturation_penalty
             + config.DEFAULT_WEIGHTS["novelty_bonus"] * breakdown.novelty_bonus
+            + config.DEFAULT_WEIGHTS.get("context_alignment", 0.6) * breakdown.context_alignment
+            + config.DEFAULT_WEIGHTS.get("status_effect_modifier", 0.4) * breakdown.status_effect_modifier
         )
 
         # --- Probability conversion ---

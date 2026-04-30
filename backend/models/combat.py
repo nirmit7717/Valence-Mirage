@@ -12,6 +12,128 @@ class CombatActionType(str, Enum):
     FLEE = "flee"
 
 
+class StatusEffectType(str, Enum):
+    """Canonical status effect identifiers."""
+    BLEED = "bleed"
+    STUN = "stun"
+    WEAKEN = "weaken"
+    FOCUS = "focus"
+    # Existing legacy effects kept for backward compat
+    POISONED = "poisoned"
+    BURNING = "burning"
+    BLOCKING = "blocking"
+    HEALING = "healing"
+    DODGING = "dodging"
+    HIDDEN = "hidden"
+
+
+# How each effect behaves during tick
+STATUS_EFFECT_RULES: dict[str, dict] = {
+    # ── New tactical effects ──
+    StatusEffectType.BLEED: {
+        "dot": (2, 4),        # random damage range per tick
+        "skip_turn": False,
+        "damage_modifier": 1.0,  # multiplier on outgoing damage
+        "roll_modifier": 0,      # flat bonus to d20
+        "armor_modifier": 0,
+        "max_duration": 3,
+        "stacks": False,         # refresh duration instead of stacking
+    },
+    StatusEffectType.STUN: {
+        "dot": (0, 0),
+        "skip_turn": True,
+        "damage_modifier": 1.0,
+        "roll_modifier": 0,
+        "armor_modifier": 0,
+        "max_duration": 1,
+        "stacks": False,
+    },
+    StatusEffectType.WEAKEN: {
+        "dot": (0, 0),
+        "skip_turn": False,
+        "damage_modifier": 0.5,  # halve outgoing damage
+        "roll_modifier": 0,
+        "armor_modifier": 0,
+        "max_duration": 2,
+        "stacks": False,
+    },
+    StatusEffectType.FOCUS: {
+        "dot": (0, 0),
+        "skip_turn": False,
+        "damage_modifier": 1.0,
+        "roll_modifier": 5,      # +5 to next d20 roll
+        "armor_modifier": 0,
+        "max_duration": 1,
+        "stacks": False,
+    },
+    # ── Legacy effects (kept for existing abilities) ──
+    StatusEffectType.POISONED: {
+        "dot": (1, 4),
+        "skip_turn": False,
+        "damage_modifier": 1.0,
+        "roll_modifier": 0,
+        "armor_modifier": 0,
+        "max_duration": 5,
+        "stacks": False,
+    },
+    StatusEffectType.BURNING: {
+        "dot": (1, 3),
+        "skip_turn": False,
+        "damage_modifier": 1.0,
+        "roll_modifier": 0,
+        "armor_modifier": 0,
+        "max_duration": 3,
+        "stacks": False,
+    },
+    StatusEffectType.BLOCKING: {
+        "dot": (0, 0),
+        "skip_turn": False,
+        "damage_modifier": 1.0,
+        "roll_modifier": 0,
+        "armor_modifier": 3,
+        "max_duration": 1,
+        "stacks": False,
+    },
+    StatusEffectType.HEALING: {
+        "dot": (-6, -2),  # negative = heal
+        "skip_turn": False,
+        "damage_modifier": 1.0,
+        "roll_modifier": 0,
+        "armor_modifier": 0,
+        "max_duration": 3,
+        "stacks": False,
+    },
+    StatusEffectType.DODGING: {
+        "dot": (0, 0),
+        "skip_turn": False,
+        "damage_modifier": 1.0,
+        "roll_modifier": 0,
+        "armor_modifier": 0,
+        "dodge_chance": 0.5,  # 50% chance to avoid attack
+        "max_duration": 1,
+        "stacks": False,
+    },
+    StatusEffectType.HIDDEN: {
+        "dot": (0, 0),
+        "skip_turn": False,
+        "damage_modifier": 1.0,
+        "roll_modifier": 3,  # bonus from stealth
+        "armor_modifier": 0,
+        "max_duration": 2,
+        "stacks": False,
+    },
+}
+
+
+def get_effect_rule(name: str) -> dict:
+    """Look up effect rule by name string. Returns default if unknown."""
+    return STATUS_EFFECT_RULES.get(
+        name.lower(),
+        {"dot": (0, 0), "skip_turn": False, "damage_modifier": 1.0,
+         "roll_modifier": 0, "armor_modifier": 0, "max_duration": 5, "stacks": False}
+    )
+
+
 class StatusEffect(BaseModel):
     name: str
     duration: int  # turns remaining

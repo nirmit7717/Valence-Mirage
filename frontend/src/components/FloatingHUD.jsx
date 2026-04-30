@@ -9,7 +9,7 @@ export default function FloatingHUD({ data }) {
     <div className="hud-sidebar">
       <div className="hud-section hud-char">
         <div className="hud-name">{data.name}</div>
-        <div className="hud-level">Level {data.level}</div>
+        <div className="hud-level">Level {data.level} · Turn {data.turn || '—'}</div>
       </div>
 
       <div className="hud-divider" />
@@ -59,16 +59,6 @@ export default function FloatingHUD({ data }) {
       <div className="hud-section">
         <div className="hud-stats-title">📍 {data.beat || '—'}</div>
       </div>
-
-      {data.objective && (
-        <>
-          <div className="hud-divider" />
-          <div className="hud-section">
-            <div className="hud-stats-title">🎯 Objective</div>
-            <div className="hud-objective">{data.objective}</div>
-          </div>
-        </>
-      )}
 
       {data.lastRoll && (
         <>

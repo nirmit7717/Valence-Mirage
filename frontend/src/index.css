@@ -67,7 +67,7 @@ body {
   border: 1px solid rgba(201, 168, 76, 0.12);
   border-radius: 14px;
   padding: 14px 12px;
-  width: 160px;
+  width: 220px;
   backdrop-filter: blur(10px);
   pointer-events: none;
   max-height: calc(100vh - 40px);
@@ -202,7 +202,7 @@ body {
   z-index: 500;
   pointer-events: all;
   /* Offset card to account for left sidebar */
-  padding-left: 80px;
+  padding-left: 120px;
 }
 .nc-fade-enter { animation: ncFadeIn 0.5s ease-out forwards; }
 .nc-fade-active { opacity: 1; }
@@ -434,6 +434,15 @@ body {
 }
 .connect-box button:hover { opacity: 0.9; box-shadow: 0 4px 16px rgba(201, 168, 76, 0.15); }
 .connect-box button:disabled { opacity: 0.4; cursor: not-allowed; box-shadow: none; }
+.cancel-btn {
+  background: transparent !important;
+  border: 1px solid rgba(201, 168, 76, 0.3) !important;
+  color: #c9a84c !important;
+  font-size: 12px !important;
+  padding: 8px 16px !important;
+  margin-top: 8px;
+}
+.cancel-btn:hover { background: rgba(201, 168, 76, 0.1) !important; }
 
 /* ═══════════════════════════════════════════════
    Combat UI — Expedition 33 Style
@@ -482,8 +491,17 @@ body {
 .player-entity .hp-bar-fill { background: linear-gradient(90deg, #080, #0f0); box-shadow: 0 0 8px rgba(0,255,0,0.4); }
 
 .status-effects-row { margin-top: 4px; display: flex; gap: 4px; flex-wrap: wrap; }
-.status-pill { font-size: 10px; padding: 1px 6px; border-radius: 3px; background: rgba(100,50,50,0.4); color: #daa; border: 1px solid #533; }
+.status-pill { font-size: 10px; padding: 1px 6px; border-radius: 3px; background: rgba(100,50,50,0.4); color: #daa; border: 1px solid #533; transition: opacity 0.3s; }
 .player-entity .status-pill { background: rgba(50,100,50,0.4); color: #ada; border-color: #353; }
+/* Status effect type colors */
+.status-pill[title="bleed"] { background: rgba(180,30,30,0.5); color: #faa; border-color: #933; }
+.status-pill[title="stun"] { background: rgba(180,180,30,0.4); color: #ffa; border-color: #993; }
+.status-pill[title="weaken"] { background: rgba(100,60,160,0.4); color: #caf; border-color: #749; }
+.status-pill[title="focus"] { background: rgba(30,140,220,0.4); color: #adf; border-color: #369; }
+.status-pill[title="poisoned"] { background: rgba(50,160,50,0.4); color: #afa; border-color: #393; }
+.status-pill[title="burning"] { background: rgba(200,100,20,0.5); color: #fa6; border-color: #a63; }
+.status-pill[title="blocking"] { background: rgba(120,120,180,0.4); color: #ccf; border-color: #669; }
+.status-pill[title="dodging"] { background: rgba(40,180,160,0.4); color: #afe; border-color: #399; }
 
 .combat-log-area {
   padding: 8px 24px; display: flex; flex-direction: column-reverse;

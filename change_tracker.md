@@ -205,3 +205,217 @@ This document tracks all significant architectural improvements, feature additio
 
 ---
 *Status: All changes verified, server tested, pushed to GitHub.*
+
+---
+
+## v0.7.0 — Combat Depth + Auth System + Stability (2026-04-28)
+
+### ⚔️ Combat Depth System — Status Effects & Abilities
+
+#### Status Effect Registry
+- **Unified effect registry** (`STATUS_EFFECT_RULES`) in `models/combat.py` — defines behavior for every effect:
+  - `bleed` — DoT: 2–4 damage/turn, 2–3 turns
+  - `stun` — Skip next turn, 1 turn
+  - `weaken` — Halve outgoing damage, 2 turns
+  - `focus` — +5 to next d20 roll, 1 turn
+  - Legacy effects preserved: poisoned, burning, blocking, healing, dodging, hidden
+- **`StatusEffectType` enum** — canonical identifiers for all effects
+- **`get_effect_rule()` lookup** — used by both engine and frontend
+- **Non-stacking**: Reapplying refreshes duration (capped at `max_duration`), never stacks
+- **Registry-driven frontend**: `combat.js` mirrors the backend registry identically
+
+#### 6-Phase Turn Structure
+Every combat turn now follows this formal order:
+1. **Apply status effects** — DoT/HoT ticks, narrative log messages
+2. **Can act?** — Stun check → skip turn if true
+3. **Execute action** — attack/ability/flee
+4. **Resolve dice roll** — d20 + roll modifiers (focus, stealth)
+5. **Calculate damage** — base × damage modifier (weaken → ×0.5)
+6. **Apply damage + update state** — dodge chance, HP update, effect application
+
+#### Combat Engine Methods (New)
+| Method | Purpose |
+|--------|----------|
+| `_apply_status_effects()` | Ticks all effects, returns narrative messages |
+| `_can_act()` | Checks stun/skip-turn effects |
+| `_get_damage_modifier()` | Multiplier from all effects on a combatant |
+| `_get_roll_modifier()` | d20 bonus from all effects (focus, stealth) |
+| `_get_armor_modifier()` | Armor bonus from effects (blocking) |
+| `_get_dodge_chance()` | Dodge probability from effects (dodging) |
+| `_apply_effect()` | Non-stacking effect application with duration cap |
+
+#### Class Abilities (Refactored)
+Each class now has **3 focused abilities** using the new effect types:
+- **Warrior**: Power Strike (raw damage), Guard (blocking), Cleave (bleed)
+- **Rogue**: Backstab (burst damage), Evade (dodging), Poison Blade (poisoned)
+- **Wizard**: Arcane Bolt (mana damage), Focus Mind (focus buff), Lightning Bolt (stun)
+- **Cleric**: Heal (HP restore), Smite (weaken), Holy Shield (blocking)
+- **Bard**: Mock (weaken), Inspire (focus), Dissonance (raw damage)
+
+#### Narration Constraints
+- Added "STATUS EFFECTS IN NARRATION" section to `narrator.txt`
+- Explicit prohibition against exposing mechanics ("applied bleed for 3 turns")
+- Narrative description templates for each effect type
+
+#### Frontend Display
+- **Status pills** now show emoji icons per effect type: 🩸bleed, 💫stun, 📉weaken, 🎯focus, ☠️poison, 🔥burning, 🛡️blocking, 💨dodging
+- **Color-coded pills** via CSS attribute selectors (bleed=red, stun=yellow, weaken=purple, focus=blue, etc.)
+- **Effect tick messages** in combat log with icons
+- **Dodge resolution** shown in combat log ("💨 You dodge Skeleton's Attack!")
+- **Stun skip** shown when enemy or player is stunned ("💫 Skeleton is stunned and cannot act!")
+
+### 🔐 Authentication & User Management
+
+#### Backend
+- **`auth.py`**: JWT authentication (python-jose), bcrypt password hashing (passlib)
+- **`models/user.py`**: User + TesterRequest Pydantic models
+- **`database.py`**: 3 new tables (users, tester_requests, campaign_history) + 8 new methods
+- **`config.py`**: JWT_SECRET, JWT_ALGORITHM, JWT_EXPIRATION_HOURS (24h default)
+- **Admin auto-creation** on startup: `admin`/`admin123` (override with `ADMIN_PASSWORD` env)
+- **Auth routes**: `/auth/login`, `/auth/create-user` (admin), `/auth/tester-request`
+- **User routes**: `/user/me`, `/user/dashboard`, `/user/logout`
+- **Backward compatible**: Game routes accept JWT optionally — works with or without auth
+- **`bcrypt==4.0.1`** pinned (passlib incompatibility with bcrypt 4.1+)
+
+#### Frontend
+- **`AppRouter.jsx`**: React Router with basename `/static`
+- **`LoginPage.jsx`**: Dark fantasy split-layout login
+- **`DashboardPage.jsx`**: User stats + campaign history
+- **`GamePage.jsx`**: Game wrapper with optional auth check
+- **`pages/auth.css`**: Dark fantasy themed auth pages
+- **`api.js`**: `getAuthHeaders()`, new auth API functions, auth headers on all calls
+- **`vite.config.js`**: Proxy `/auth` and `/user` routes
+- **`react-router-dom`** added as dependency
+
+### 🐛 Bug Fixes & Stability
+
+| Issue | File | Fix |
+|-------|------|-----|
+| `NameError: 're' not defined` → 500 on session creation | `main.py` | Added `import re` |
+| BrowserRouter missing `basename` → 404 on sub-routes | `AppRouter.jsx` | Added `basename="/static"` |
+| Race condition: `busy` flag cleared during dice animation → duplicate actions | `useGame.js` | `busy` stays true until `onDiceAnimationComplete` |
+| DiceRoll fires `onComplete` when `diceResult` is null → premature processing | `DiceRoll.jsx` | Guard: return early if no `diceResult`, removed from deps |
+| `}}}` JSX syntax error in status effect rendering | `CombatOverlay.jsx` | Fixed double-closing brace |
+
+### 📁 Files Changed
+
+**New files:**
+- `backend/auth.py`, `backend/models/user.py`
+- `frontend/src/AppRouter.jsx`, `frontend/src/pages/LoginPage.jsx`, `frontend/src/pages/DashboardPage.jsx`, `frontend/src/pages/GamePage.jsx`, `frontend/src/pages/auth.css`
+
+**Modified files:**
+- `backend/models/combat.py` — StatusEffectType enum, STATUS_EFFECT_RULES registry, get_effect_rule()
+- `backend/engines/combat_engine.py` — 7 new methods, 6-phase turn structure, removed _tick_effects
+- `backend/models/character.py` — 3 abilities/class with new effect types
+- `backend/main.py` — import re, auth routes, user routes
+- `backend/database.py` — 3 tables, 8 methods for user management
+- `backend/config.py` — JWT config fields
+- `backend/prompts/narrator.txt` — Status effect narration constraints
+- `frontend/src/utils/combat.js` — STATUS_RULES registry, 8 new exported functions, updated resolution functions
+- `frontend/src/components/CombatOverlay.jsx` — Icon imports, status pill rendering with icons
+- `frontend/src/index.css` — Per-effect color styling for status pills
+- `frontend/src/api.js` — Auth headers, auth API functions
+- `frontend/src/hooks/useGame.js` — Busy flag fix
+- `frontend/src/components/DiceRoll.jsx` — Null guard fix
+- `frontend/vite.config.js` — Auth proxy routes
+
+---
+*Status: All changes verified, server tested at http://localhost:8000.*
+
+---
+
+## v0.7.1 — Combat Enforcement + UI Polish + Campaign History (2026-04-30)
+
+### ⚔️ Combat Mode Enforcement
+
+#### Combat Tension Tracker
+- Replaced flat `turns_since_combat >= 5` counter with context-aware `combat_tension` accumulator
+- Tension accumulates based on action risk and story context:
+  - +1 base per turn
+  - +2 for risky actions (attack, cast_spell, intimidate)
+  - +1 for hostile narration context (enemy, undead, ambush, etc.)
+  - +1 when a combat beat is available
+  - Threshold: 6 — triggers combat when reached
+- Resets to 0 on combat start/resolution
+- Enemy selection remains context-aware (narrator-driven + `_fallback_enemy()` guarantee chain)
+
+#### Combat Auto-Activation (Frontend)
+- **Root cause**: Combat data was stored in `narration.combatData` but `setCombat()` only fired on manual dismiss — if narration had choices (always does), combat never activated
+- **Fix**: Auto-activate combat 2.5s after combat narration appears, regardless of choices
+- `setCombat(createCombatState(combatData))` called from `_processResponse` directly
+
+#### Combat Mode Guard (Backend)
+- Added at top of `submit_action` — if combat is active, blocks all narrative processing
+- Returns `outcome: "combat_active"` with full `combat_data` and combat choices `["Attack", "Use Ability", "Defend"]`
+- Prevents combat from being bypassed by narrative actions
+
+### 🎨 UI Polish
+
+#### Sidebar Improvements
+- Width increased from 160px → 220px for better readability
+- Narrative card left-padding adjusted to match (80px → 120px)
+- Turn counter added to HUD: `Level X · Turn Y`
+- Removed `🎯 Objective` display from sidebar (breaks immersion — objective tracked internally only)
+
+#### 4th Ability Per Class
+- Added a 4th ability to every class for more tactical depth:
+  - **Warrior**: War Cry (support, weaken 2 turns)
+  - **Rogue**: Shadow Step (support, focus 1 turn)
+  - **Wizard**: Arcane Shield (defend, blocking 1 turn)
+  - **Cleric**: Purify (support, focus 1 turn)
+  - **Bard**: Lullaby (support, stun 1 turn)
+- Frontend maps all abilities dynamically (`state.abilities.map()`) — no hard limits
+
+#### Navigation Fix
+- Added "← Back to Dashboard" button to `ConnectOverlay` (new game screen)
+- Uses `window.history.back()` for clean SPA navigation
+- Styled as ghost button (doesn't compete with CTA)
+
+### 💾 Campaign History Persistence
+
+- **Root cause**: `save_campaign_history()` existed in database.py but was never called from main.py
+- Added `_record_campaign_end()` helper with:
+  - **Duplicate guard**: `campaign_saved` flag prevents double-saves
+  - **Admin user fallback**: Sessions without auth use admin user for history
+  - **Error recovery**: Clears `campaign_saved` on failure to allow retry
+  - **Debug logging**: ✅/❌ prefixed messages
+- Called at all 5 campaign-ending endpoints:
+  - Deviation game-over (`lost_focus`)
+  - Campaign victory — no-roll path (`victory`)
+  - Player death — roll path (`defeat`)
+  - Campaign victory — combat resolve (`victory`)
+  - Player death — combat resolve (`defeat`)
+- Session creation now extracts `user_id` from optional JWT
+- Dashboard fetches and displays campaign history + stats
+
+### 🐛 Bug Fixes
+
+| Issue | File | Fix |
+|-------|------|-----|
+| Status effect crash: `se.get("name")` on `list[str]` | `main.py` | Safe `isinstance(se, dict)` check, handles str/dict/mixed/None |
+| Combat never activated despite `combat_started=True` | `useGame.js` | Auto-activate combat from `combatData` with 2.5s delay |
+| Narrative actions during combat | `main.py` | Combat Mode Guard returns `combat_active` with combat data |
+| Campaign history never saved | `main.py` | `_record_campaign_end()` + calls at all 5 end points |
+| No back button from new game screen | `ConnectOverlay.jsx` | Added cancel button with `onCancel` prop |
+| SPA 404s on direct URL access | `main.py` | Replaced `StaticFiles` mount with SPA fallback route |
+
+### 📁 Files Changed
+
+**Modified files:**
+- `backend/main.py` — Combat tension tracker, combat mode guard, status effect normalization, SPA fallback routing, `_record_campaign_end()`, user_id extraction, campaign history recording
+- `backend/models/character.py` — 4 abilities/class (was 3)
+- `backend/engines/probability.py` — `context_alignment` + `status_effect_modifier` params
+- `backend/engines/deviation.py` — Campaign deviation evaluator
+- `backend/models/outcome.py` — New ScoreBreakdown fields
+- `backend/config.py` — New probability weights
+- `frontend/src/hooks/useGame.js` — Auto-activate combat, turn counter, warning display
+- `frontend/src/components/FloatingHUD.jsx` — Turn counter, removed objective
+- `frontend/src/components/ConnectOverlay.jsx` — Back button
+- `frontend/src/App.jsx` — `onCancel` prop for ConnectOverlay
+- `frontend/src/index.css` — Sidebar width, padding, cancel button styles
+
+**New files:**
+- `backend/engines/deviation.py` — Campaign deviation tracking
+
+---
+*Status: All changes verified, server tested at http://localhost:8000.*

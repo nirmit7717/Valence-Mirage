@@ -34,6 +34,8 @@ DEFAULT_WEIGHTS = {
     "mana_penalty": 0.6,
     "saturation_penalty": 0.4,
     "novelty_bonus": 0.3,
+    "context_alignment": 0.6,
+    "status_effect_modifier": 0.4,
 }
 
 # ─── Dice ───
@@ -62,6 +64,11 @@ DEFAULT_MANA = 50
 # ─── API ───
 API_HOST = os.getenv("API_HOST", "0.0.0.0")
 API_PORT = int(os.getenv("API_PORT", 8000))
+
+# ─── Auth ───
+JWT_SECRET = os.getenv("JWT_SECRET", "dev-secret-change-in-production")
+JWT_ALGORITHM = "HS256"
+JWT_EXPIRATION_HOURS = 24
 
 # ─── Storage (Phase 2+) ───
 DATABASE_URL = os.getenv("DATABASE_URL", "sqlite+aiosqlite:///./valence_mirage.db")

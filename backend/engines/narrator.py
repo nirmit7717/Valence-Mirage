@@ -50,6 +50,7 @@ class Narrator:
         world_state: dict,
         npc_dialogue: dict | None = None,
         turn_history: list | None = None,
+        combat_context: str | None = None,
     ) -> str:
         # Fetch relevant rules for grounding
         relevant_rules = await self.rule_retriever.get_relevant_rules(
@@ -133,7 +134,9 @@ class Narrator:
             user_msg += f"NPC Interaction: {npc_dialogue.get('dialogue', '')[:200]}\n"
         if history_ctx:
             user_msg += f"\nRecent History:\n{history_ctx}"
-        
+
+        if combat_context:
+            user_msg += f"\n{combat_context}\n"
 
         if rules_context:
             user_msg += f"\nRelevant Rules:\n{rules_context}\n"

@@ -9,6 +9,8 @@ export default defineConfig({
       '/session': 'http://localhost:8000',
       '/sessions': 'http://localhost:8000',
       '/health': 'http://localhost:8000',
+      '/auth': 'http://localhost:8000',
+      '/user': 'http://localhost:8000',
     }
   },
   build: {

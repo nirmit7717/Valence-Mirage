@@ -6,7 +6,7 @@ export default function DiceRoll({ diceResult, onComplete }) {
   const [rollCount, setRollCount] = useState(0);
 
   useEffect(() => {
-    if (!diceResult) { onComplete?.(); return; }
+    if (!diceResult) return; // Wait for actual dice data, don't fire onComplete
 
     // Phase 1: Rolling animation (numbers cycling)
     const finalRoll = diceResult.rolled;
@@ -40,7 +40,7 @@ export default function DiceRoll({ diceResult, onComplete }) {
     }, 80);
 
     return () => clearInterval(interval);
-  }, [diceResult, onComplete]);
+  }, [diceResult]); // removed onComplete from deps to avoid re-triggering
 
   if (!diceResult || phase === 'done') return null;
 

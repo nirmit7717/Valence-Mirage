@@ -12,7 +12,7 @@ import SettingsPanel from './components/SettingsPanel';
 
 injectAmbienceCSS();
 
-export default function App() {
+export default function GameApp() {
   const game = useGame();
   const [connected, setConnected] = useState(false);
   const [animationsEnabled, setAnimationsEnabled] = useState(true);
@@ -43,7 +43,7 @@ export default function App() {
     <div className="game-root">
       {!connected ? (
         <>
-          <ConnectOverlay onStart={handleStart} />
+          <ConnectOverlay onStart={handleStart} onCancel={connected ? undefined : () => window.history.back()} />
           <LoadingOverlay show={game.loading} />
         </>
       ) : (

@@ -5,7 +5,7 @@ import random
 import logging
 from models.combat import (
     CombatState, Combatant, CombatAction, CombatActionType,
-    CombatLogEntry, StatusEffect,
+    CombatLogEntry, StatusEffect, get_effect_rule,
 )
 from data.enemies import get_random_enemy, roll_loot, roll_damage, ENEMY_TEMPLATES
 from models.game_state import Item
@@ -77,10 +77,16 @@ class CombatEngine:
         enemy = combat.enemies[0] if combat.enemies else None
         if not enemy or not player:
             return combat
-            
-        active_effects = [e.name.lower() for e in player.status_effects]
-        if "paralyzed" in active_effects:
-            return self._log(combat, player.name, action.ability_name, "miss", 0, "You are paralyzed and cannot move!")
+
+        # ── Phase 1: Apply status effects on player ──
+        effect_msgs = self._apply_status_effects(player)
+        for msg in effect_msgs:
+            self._log(combat, player.name, "Effect Tick", "effect", 0, msg)
+
+        # ── Phase 2: Can player act? ──
+        if not self._can_act(player):
+            return self._log(combat, player.name, "Stunned", "miss", 0,
+                             "You are stunned and cannot act!")
 
         # Check mana
         if action.mana_cost > 0 and player.mana < action.mana_cost:
@@ -107,8 +113,7 @@ class CombatEngine:
                                  f"You use {action.ability_name} for {heal_amount} HP!")
             # Status effect on self
             if action.status_effect:
-                eff = StatusEffect(name=action.status_effect, duration=action.status_duration)
-                player.status_effects.append(eff)
+                self._apply_effect(player, action.status_effect, action.status_duration)
                 return self._log(combat, player.name, action.ability_name, "buff", 0,
                                  f"You cast {action.ability_name}!")
             return self._log(combat, player.name, action.ability_name, "support", 0,
@@ -116,54 +121,45 @@ class CombatEngine:
 
         # Attack / Spell / Defend
         if action.action_type == CombatActionType.DEFEND:
-            eff = StatusEffect(name="blocking", duration=1, armor_modifier=3)
-            player.status_effects.append(eff)
+            self._apply_effect(player, "blocking", 1)
             return self._log(combat, player.name, action.ability_name or "Block", "defend", 0,
                              "You brace yourself for the next attack.")
 
-        # Roll to hit
+        # ── Phase 3: Roll to hit ──
         roll = self.rng.randint(1, 20)
-        attack_total = roll + player.attack_bonus
-        
-        if "blinded" in active_effects:
-            attack_total -= 5
+        roll_modifier = self._get_roll_modifier(player)
+        attack_total = roll + player.attack_bonus + roll_modifier
 
-        # Crit on natural 20
         is_crit = roll == 20
         is_miss = roll == 1
 
         if is_miss:
             return self._log(combat, player.name, action.ability_name, "miss", 0, "Your attack misses!")
 
-        enemy_active_effects = [e.name.lower() for e in enemy.status_effects]
-        enemy_armor = enemy.armor
-        if "raged" in enemy_active_effects:
-            enemy_armor -= 2
+        enemy_armor = enemy.armor + self._get_armor_modifier(enemy)
 
-        # Check against enemy armor
         threshold = 8 + enemy_armor
         if attack_total < threshold and not is_crit:
             return self._log(combat, player.name, action.ability_name, "miss", 0, "Your attack glances off their armor!")
 
-        # Calculate damage
+        # ── Phase 4: Calculate damage ──
         damage = roll_damage(action.damage_dice, self.rng) if action.damage_dice else self.rng.randint(1, 6)
-        
-        if "weakened" in active_effects:
-            damage = max(1, damage // 2)
-        if "raged" in active_effects:
-            damage += 3
+
+        # Apply player's damage modifier (weaken, etc.)
+        damage_modifier = self._get_damage_modifier(player)
+        damage = max(1, int(damage * damage_modifier))
+
         if is_crit:
             damage = int(damage * 1.5)
             result = "crit"
         else:
             result = "hit"
 
-        # Apply status effect to enemy
+        # ── Phase 5: Apply status effect to enemy ──
         if action.status_effect:
-            enemy.status_effects.append(
-                StatusEffect(name=action.status_effect, duration=action.status_duration)
-            )
+            self._apply_effect(enemy, action.status_effect, action.status_duration)
 
+        # ── Phase 6: Apply damage ──
         enemy.hp = max(0, enemy.hp - damage)
 
         log = self._log(combat, player.name, action.ability_name, result, damage,
@@ -184,16 +180,19 @@ class CombatEngine:
         if not player:
             return combat
 
-        # Tick status effects on enemy
-        self._tick_effects(enemy)
-        
+        # ── Phase 1: Apply status effects on enemy ──
+        effect_msgs = self._apply_status_effects(enemy)
+        for msg in effect_msgs:
+            self._log(combat, enemy.name, "Effect Tick", "effect", 0, msg)
+
         if enemy.hp <= 0:
             combat.status = "victory"
             return self._log(combat, enemy.name, "Death", "defeat", 0, f"{enemy.name} succumbs to its wounds!")
-            
-        active_effects = [e.name.lower() for e in enemy.status_effects]
-        if "paralyzed" in active_effects:
-            return self._log(combat, enemy.name, "Skip", "miss", 0, f"{enemy.name} is paralyzed and cannot move!")
+
+        # ── Phase 2: Can enemy act? ──
+        if not self._can_act(enemy):
+            return self._log(combat, enemy.name, "Stunned", "miss", 0,
+                             f"{enemy.name} is stunned and cannot act!")
 
         # Simple AI: use abilities if available and hp < 50%, else basic attack
         action_name = "Attack"
@@ -225,12 +224,10 @@ class CombatEngine:
             status_effect = abil.get("status_effect")
             status_duration = abil.get("status_duration", 1)
 
-        # Roll to hit
+        # ── Phase 3: Roll to hit ──
         roll = self.rng.randint(1, 20)
-        attack_total = roll + enemy.attack_bonus
-        
-        if "blinded" in active_effects:
-            attack_total -= 5
+        roll_modifier = self._get_roll_modifier(enemy)
+        attack_total = roll + enemy.attack_bonus + roll_modifier
 
         is_crit = roll == 20
         is_miss = roll == 1
@@ -239,24 +236,26 @@ class CombatEngine:
             return self._log(combat, enemy.name, action_name, "miss", 0,
                              f"{enemy.name}'s attack misses!")
 
-        # Player's effective armor (base + blocking + effects)
-        player_armor = player.armor
-        player_active_effects = [e.name.lower() for e in player.status_effects]
-        if "raged" in player_active_effects:
-            player_armor -= 2
+        # Player's effective armor
+        player_armor = player.armor + self._get_armor_modifier(player)
+
+        # Check dodge
+        dodge_chance = self._get_dodge_chance(player)
+        if dodge_chance > 0 and self.rng.random() < dodge_chance:
+            return self._log(combat, enemy.name, action_name, "miss", 0,
+                             f"{enemy.name}'s attack is dodged!")
 
         threshold = 8 + player_armor
         if attack_total < threshold and not is_crit:
             return self._log(combat, enemy.name, action_name, "miss", 0,
-                             f"{enemy.name}'s attack glances off your armor (AC {player_armor})!")
+                             f"{enemy.name}'s attack glances off your armor!")
 
-        # Damage
+        # ── Phase 4: Calculate damage ──
         damage = roll_damage(damage_dice, self.rng) if damage_dice else self.rng.randint(1, 6) + int(enemy.attack_bonus)
-        
-        if "weakened" in active_effects:
-            damage = max(1, damage // 2)
-        if "raged" in active_effects:
-            damage += 3
+
+        # Apply enemy's damage modifier (weaken, etc.)
+        damage_modifier = self._get_damage_modifier(enemy)
+        damage = max(1, int(damage * damage_modifier))
 
         if is_crit:
             damage = int(damage * 1.5)
@@ -264,12 +263,11 @@ class CombatEngine:
         else:
             result = "hit"
 
-        # Apply status effect to player
+        # ── Phase 5: Apply status effect to player ──
         if status_effect:
-            player.status_effects.append(
-                StatusEffect(name=status_effect, duration=status_duration)
-            )
+            self._apply_effect(player, status_effect, status_duration)
 
+        # ── Phase 6: Apply damage ──
         player.hp = max(0, player.hp - damage)
 
         # Heal-self abilities (life drain, etc.)
@@ -288,7 +286,9 @@ class CombatEngine:
     def tick_player_effects(self, combat: CombatState) -> CombatState:
         """Tick status effects on player at start of their turn."""
         if combat.player:
-            self._tick_effects(combat.player)
+            msgs = self._apply_status_effects(combat.player)
+            for msg in msgs:
+                self._log(combat, combat.player.name, "Effect Tick", "effect", 0, msg)
         return combat
 
     def get_combat_rewards(self, combat: CombatState) -> dict:
@@ -335,32 +335,111 @@ class CombatEngine:
         stats = player_state.stats
         return (stats.strength + stats.dexterity) / 4.0
 
-    def _tick_effects(self, combatant: Combatant):
-        """Tick status effects, apply damage-over-time, remove expired."""
+    def _apply_status_effects(self, combatant: Combatant) -> list[str]:
+        """Apply all status effects on a combatant. Returns narrative log messages."""
+        messages = []
         expired = []
+
         for eff in combatant.status_effects:
-            eff.duration -= 1
+            rule = get_effect_rule(eff.name)
             name = eff.name.lower()
-            
-            # Poison
-            if name == "poisoned":
-                dmg = self.rng.randint(1, 4)
-                combatant.hp = max(0, combatant.hp - dmg)
-            
-            # Healing
-            if name == "healing":
-                h = self.rng.randint(2, 6)
-                combatant.hp = min(combatant.max_hp, combatant.hp + h)
-                
-            # Legacy generic DOT
+
+            # DoT / HoT
+            dot_lo, dot_hi = rule.get("dot", (0, 0))
+            if dot_lo != 0 or dot_hi != 0:
+                val = self.rng.randint(min(dot_lo, dot_hi), max(dot_lo, dot_hi))
+                if val < 0:
+                    # Heal
+                    heal = abs(val)
+                    combatant.hp = min(combatant.max_hp, combatant.hp + heal)
+                    messages.append(f"{combatant.name} recovers {heal} HP from {eff.name}.")
+                elif val > 0:
+                    combatant.hp = max(0, combatant.hp - val)
+                    messages.append(f"{combatant.name} takes {val} {eff.name} damage.")
+
+            # Legacy damage_per_turn fallback
             if eff.damage_per_turn > 0:
                 combatant.hp = max(0, combatant.hp - eff.damage_per_turn)
-                
+                messages.append(f"{combatant.name} takes {eff.damage_per_turn} damage from {eff.name}.")
+
+            # Tick duration
+            eff.duration -= 1
             if eff.duration <= 0:
                 expired.append(eff)
-                
+                messages.append(f"{eff.name} fades from {combatant.name}.")
+
         for eff in expired:
             combatant.status_effects.remove(eff)
+
+        return messages
+
+    def _can_act(self, combatant: Combatant) -> bool:
+        """Check if combatant can take an action this turn."""
+        for eff in combatant.status_effects:
+            rule = get_effect_rule(eff.name)
+            if rule.get("skip_turn"):
+                return False
+        return True
+
+    def _get_damage_modifier(self, combatant: Combatant) -> float:
+        """Get combined outgoing damage modifier from all status effects."""
+        modifier = 1.0
+        for eff in combatant.status_effects:
+            rule = get_effect_rule(eff.name)
+            modifier *= rule.get("damage_modifier", 1.0)
+        return modifier
+
+    def _get_roll_modifier(self, combatant: Combatant) -> int:
+        """Get combined d20 roll modifier from all status effects."""
+        modifier = 0
+        for eff in combatant.status_effects:
+            rule = get_effect_rule(eff.name)
+            modifier += rule.get("roll_modifier", 0)
+        return modifier
+
+    def _get_armor_modifier(self, combatant: Combatant) -> int:
+        """Get combined armor modifier from all status effects."""
+        modifier = 0
+        for eff in combatant.status_effects:
+            rule = get_effect_rule(eff.name)
+            modifier += rule.get("armor_modifier", 0)
+            # Legacy armor_modifier field on StatusEffect itself
+            if eff.armor_modifier != 0:
+                modifier += eff.armor_modifier
+        return modifier
+
+    def _get_dodge_chance(self, combatant: Combatant) -> float:
+        """Get dodge chance from status effects."""
+        chance = 0.0
+        for eff in combatant.status_effects:
+            rule = get_effect_rule(eff.name)
+            chance = max(chance, rule.get("dodge_chance", 0.0))
+            if eff.dodge_chance > 0:
+                chance = max(chance, eff.dodge_chance)
+        return chance
+
+    def _apply_effect(self, combatant: Combatant, effect_name: str, duration: int):
+        """Apply a status effect with stacking rules."""
+        rule = get_effect_rule(effect_name)
+        max_dur = rule.get("max_duration", 5)
+        capped_duration = min(duration, max_dur)
+
+        # Check if already has this effect
+        existing = next((e for e in combatant.status_effects if e.name.lower() == effect_name.lower()), None)
+        if existing:
+            if rule.get("stacks"):
+                # Stack: add another instance (capped at 3)
+                if len([e for e in combatant.status_effects if e.name.lower() == effect_name.lower()]) < 3:
+                    combatant.status_effects.append(
+                        StatusEffect(name=effect_name, duration=capped_duration)
+                    )
+            else:
+                # Refresh: just reset duration
+                existing.duration = max(existing.duration, capped_duration)
+        else:
+            combatant.status_effects.append(
+                StatusEffect(name=effect_name, duration=capped_duration)
+            )
 
     def _log(self, combat: CombatState, actor: str, action: str, result: str,
              damage: int, message: str) -> CombatState:

@@ -45,6 +45,32 @@ CREATE TABLE IF NOT EXISTS turns (
 );
 
 CREATE INDEX IF NOT EXISTS idx_turns_session ON turns(session_id, turn_number);
+
+CREATE TABLE IF NOT EXISTS users (
+    id TEXT PRIMARY KEY,
+    username TEXT UNIQUE NOT NULL,
+    password_hash TEXT NOT NULL,
+    role TEXT DEFAULT 'player',
+    created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS tester_requests (
+    id TEXT PRIMARY KEY,
+    email TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS campaign_history (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL,
+    session_id TEXT,
+    campaign_title TEXT,
+    result TEXT,
+    turns INTEGER,
+    character_class TEXT,
+    created_at TEXT NOT NULL,
+    FOREIGN KEY (user_id) REFERENCES users(id)
+);
 """
 
 
@@ -188,6 +214,109 @@ class Database:
                 outcome=outcome,
             ))
         return turns
+
+    # ─── Full Session Save ────────────────────────────────────────────────
+
+    # ─── User Management ────────────────────────────────────────────────
+
+    async def create_user(self, username: str, password_hash: str, role: str = "player") -> dict:
+        import uuid
+        user_id = str(uuid.uuid4())
+        now = datetime.now().isoformat()
+        await self.db.execute(
+            "INSERT INTO users (id, username, password_hash, role, created_at) VALUES (?, ?, ?, ?, ?)",
+            (user_id, username, password_hash, role, now),
+        )
+        await self.db.commit()
+        return {"id": user_id, "username": username, "role": role, "created_at": now}
+
+    async def get_user_by_username(self, username: str) -> Optional[dict]:
+        row = await self.db.execute("SELECT * FROM users WHERE username = ?", (username,))
+        user = await row.fetchone()
+        if not user:
+            return None
+        return {"id": user["id"], "username": user["username"],
+                "password_hash": user["password_hash"], "role": user["role"],
+                "created_at": user["created_at"]}
+
+    async def get_user_by_id(self, user_id: str) -> Optional[dict]:
+        row = await self.db.execute("SELECT * FROM users WHERE id = ?", (user_id,))
+        user = await row.fetchone()
+        if not user:
+            return None
+        return {"id": user["id"], "username": user["username"],
+                "password_hash": user["password_hash"], "role": user["role"],
+                "created_at": user["created_at"]}
+
+    async def count_users(self) -> int:
+        row = await self.db.execute("SELECT COUNT(*) FROM users")
+        result = await row.fetchone()
+        return result[0]
+
+    async def create_tester_request(self, email: str) -> dict:
+        import uuid
+        req_id = str(uuid.uuid4())
+        now = datetime.now().isoformat()
+        await self.db.execute(
+            "INSERT INTO tester_requests (id, email, created_at) VALUES (?, ?, ?)",
+            (req_id, email, now),
+        )
+        await self.db.commit()
+        return {"id": req_id, "email": email, "created_at": now}
+
+    async def save_campaign_history(self, user_id: str, session_id: str, title: str,
+                                     result: str, turns: int, character_class: str) -> dict:
+        import uuid
+        h_id = str(uuid.uuid4())
+        now = datetime.now().isoformat()
+        await self.db.execute(
+            """INSERT INTO campaign_history (id, user_id, session_id, campaign_title, result, turns, character_class, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+            (h_id, user_id, session_id, title, result, turns, character_class, now),
+        )
+        await self.db.commit()
+        return {"id": h_id, "user_id": user_id, "session_id": session_id,
+                "campaign_title": title, "result": result, "turns": turns,
+                "character_class": character_class, "created_at": now}
+
+    async def get_campaign_history(self, user_id: str) -> list[dict]:
+        rows = await self.db.execute(
+            "SELECT * FROM campaign_history WHERE user_id = ? ORDER BY created_at DESC",
+            (user_id,),
+        )
+        results = []
+        async for row in rows:
+            results.append({
+                "id": row["id"], "session_id": row["session_id"],
+                "campaign_title": row["campaign_title"], "result": row["result"],
+                "turns": row["turns"], "character_class": row["character_class"],
+                "created_at": row["created_at"],
+            })
+        return results
+
+    async def get_user_stats(self, user_id: str) -> dict:
+        rows = await self.db.execute(
+            "SELECT result, turns, character_class FROM campaign_history WHERE user_id = ?",
+            (user_id,),
+        )
+        total = 0
+        wins = 0
+        total_turns = 0
+        class_counts: dict[str, int] = {}
+        async for row in rows:
+            total += 1
+            if row["result"] == "victory":
+                wins += 1
+            total_turns += row["turns"] or 0
+            cls = row["character_class"] or "unknown"
+            class_counts[cls] = class_counts.get(cls, 0) + 1
+        favorite_class = max(class_counts, key=class_counts.get) if class_counts else "none"
+        return {
+            "total_campaigns": total,
+            "wins": wins,
+            "avg_turns": round(total_turns / total, 1) if total > 0 else 0,
+            "favorite_class": favorite_class,
+        }
 
     # ─── Full Session Save ────────────────────────────────────────────────
 

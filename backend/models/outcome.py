@@ -12,6 +12,8 @@ class ScoreBreakdown(BaseModel):
     mana_penalty: float = 0.0      # Insufficient mana penalty
     saturation_penalty: float = 0.0  # Repeated action penalty
     novelty_bonus: float = 0.0     # Creative action bonus
+    context_alignment: float = 0.0 # How well action aligns with current narrative context
+    status_effect_modifier: float = 0.0  # Modifier from active status effects
 
 
 class ProbabilityScore(BaseModel):

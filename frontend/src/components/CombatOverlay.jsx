@@ -1,5 +1,5 @@
 import { useState, useCallback, useEffect, useRef } from 'react';
-import { rollD20, rollDice, getWeaponDice, tickEffects, resolvePlayerAttack, resolvePlayerSkill, resolvePlayerItem, resolveEnemyTurn } from '../utils/combat';
+import { rollD20, rollDice, getWeaponDice, tickEffects, resolvePlayerAttack, resolvePlayerSkill, resolvePlayerItem, resolveEnemyTurn, canAct, applyEffect, getStatusIcon, getRollModifier, getArmorModifier, getDamageModifier, getDodgeChance } from '../utils/combat';
 
 // ─── Inline Combat Dice Animation ───
 function CombatDice({ roll, target, success, crit, onDone }) {
@@ -195,10 +195,10 @@ export default function CombatOverlay({ combat, onResolve, animationsEnabled }) 
             <div className="hp-text">HP: {Math.max(0, state.enemy.hp)}/{state.enemy.max_hp} | Armor: {state.enemy.armor}</div>
             {state.enemy.status_effects.length > 0 && (
               <div className="status-effects-row">
-                {state.enemy.status_effects.map((se, i) => <span key={i} className="status-pill">{se.name}{se.duration > 0 ? ` (${se.duration})` : ''}</span>)}
+                {state.enemy.status_effects.map((se, i) => <span key={i} className="status-pill" title={se.name}>{getStatusIcon(se.name)} {se.name}{se.duration > 0 ? ` (${se.duration})` : ''}</span>)}
               </div>
             )}
-            {/* Damage floats */}
+            {/* Damage floats - enemy */}
             {dmgFloats.filter(f => f.target === 'enemy').map(f => (
               <div key={f.id} className={`dmg-float ${f.type === 'crit' ? 'crit-float' : f.type === 'heal' ? 'heal-float' : 'dmg-dealt'}`}>
                 {f.type === 'heal' ? '+' : '-'}{f.amount}
@@ -216,9 +216,10 @@ export default function CombatOverlay({ combat, onResolve, animationsEnabled }) 
             <div className="hp-text">HP: {Math.max(0, state.player.hp)}/{state.player.max_hp} | MP: {state.player.mana}/{state.player.max_mana}</div>
             {state.player.status_effects.length > 0 && (
               <div className="status-effects-row">
-                {state.player.status_effects.map((se, i) => <span key={i} className="status-pill">{se.name}{se.duration > 0 ? ` (${se.duration})` : ''}</span>)}
+                {state.player.status_effects.map((se, i) => <span key={i} className="status-pill" title={se.name}>{getStatusIcon(se.name)} {se.name}{se.duration > 0 ? ` (${se.duration})` : ''}</span>)}
               </div>
             )}
+            {/* Damage floats - player */}
             {dmgFloats.filter(f => f.target === 'player').map(f => (
               <div key={f.id} className={`dmg-float ${f.type === 'crit' ? 'crit-float' : f.type === 'heal' ? 'heal-float' : 'dmg-taken'}`}>
                 {f.type === 'heal' ? '+' : '-'}{f.amount}

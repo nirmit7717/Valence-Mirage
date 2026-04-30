@@ -14,7 +14,7 @@ const SIZES = [
   { value: 'large', emoji: '📖', label: 'Grand Saga (30-35 turns)' },
 ];
 
-export default function ConnectOverlay({ onStart }) {
+export default function ConnectOverlay({ onStart, onCancel }) {
   const [name, setName] = useState('Adventurer');
   const [cls, setCls] = useState('warrior');
   const [size, setSize] = useState('medium');
@@ -50,6 +50,11 @@ export default function ConnectOverlay({ onStart }) {
         <button onClick={handleStart} disabled={loading}>
           {loading ? 'Creating...' : 'Enter the World'}
         </button>
+        {onCancel && (
+          <button className="cancel-btn" onClick={onCancel} disabled={loading}>
+            ← Back to Dashboard
+          </button>
+        )}
       </div>
     </div>
   );

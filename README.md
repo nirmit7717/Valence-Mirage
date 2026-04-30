@@ -42,8 +42,9 @@ Players can attempt anything. Probability decides the cost.
 ```
 backend/
 ├── main.py                    # FastAPI server, API endpoints
-├── config.py                  # NVIDIA NIM API, model config
-├── database.py                # SQLite persistence (aiosqlite)
+├── auth.py                     # JWT auth, bcrypt, user management
+├── config.py                  # NVIDIA NIM API, model config, JWT config
+├── database.py                # SQLite persistence (aiosqlite) + user tables
 ├── engines/
 │   ├── campaign_planner.py    # Template-driven campaign generation
 │   ├── intent_parser.py       # Action classification (8B)
@@ -54,10 +55,12 @@ backend/
 │   ├── dice.py                # d20 resolution, 5 outcome tiers
 │   └── state_manager.py       # Player/session state tracking
 ├── models/
-│   ├── character.py           # Classes, abilities, starting gear
+│   ├── character.py           # Classes, abilities (4/class), starting gear
+│   ├── combat.py              # Combat models + StatusEffectType registry
 │   ├── game_state.py          # Player, session, turn models
 │   ├── action.py              # ActionIntent model
-│   └── outcome.py             # Outcome types
+│   ├── outcome.py             # Outcome types
+│   └── user.py                # User + TesterRequest models
 ├── data/
 │   ├── campaign_templates.py  # Small/Medium/Large campaign skeletons
 │   ├── enemies.py             # Enemy templates + deterministic loot tables
@@ -79,8 +82,13 @@ frontend/
 ├── vite.config.js             # Build config (outputs to backend/static)
 ├── src/
 │   ├── main.jsx               # React root
+│   ├── AppRouter.jsx           # React Router (/, /login, /dashboard, /game)
 │   ├── App.jsx                # Layout + theme manager
-│   ├── api.js                 # Backend API wrapper
+│   ├── api.js                 # Backend API wrapper + auth headers
+│   ├── pages/
+│   │   ├── LoginPage.jsx       # Dark fantasy login
+│   │   ├── DashboardPage.jsx   # User stats + campaign history
+│   │   └── GamePage.jsx        # Game wrapper with auth check
 │   ├── hooks/
 │   │   └── useGame.js          # Core game state hook
 │   ├── components/
@@ -108,7 +116,8 @@ frontend/
 | Component | Technology |
 |-----------|-----------|
 | Backend | Python 3, FastAPI, Uvicorn |
-| Frontend | React + Vite (dark fantasy immersive UI) |
+| Frontend | React + Vite + React Router (dark fantasy immersive UI) |
+| Auth | JWT (python-jose), bcrypt (passlib) |
 | AI — Intent Parsing | Llama 3.1 8B (NVIDIA NIM) |
 | AI — Narration | Llama 3.3 70B (NVIDIA NIM) |
 | AI — Embeddings | NV-EmbedQA-E5 (NVIDIA NIM) |
@@ -119,7 +128,7 @@ frontend/
 
 ## Project Status
 
-**v0.4.0 — Active Development**
+**v0.7.1 — Active Development**
 
 | Phase | Focus | Status |
 |-------|-------|--------|
@@ -127,7 +136,10 @@ frontend/
 | 2 | State & Constraints (persistence, RAG, rules) | ✅ Complete |
 | 3 | Intelligence (vector search, NPCs, trajectories) | ✅ Complete |
 | 3.5 | Character Classes + Campaign Templates | ✅ Complete |
-| 3.6 | Turn-Based Combat System | 🔧 In Progress |
+| 3.6 | Turn-Based Combat System | ✅ Complete |
+| 3.7 | Combat Depth (Status Effects + Abilities) | ✅ Complete |
+| 3.8 | Auth + User Management | ✅ Complete |
+| 3.9 | Combat Enforcement + UI Polish | ✅ Complete |
 | 4 | RL Engagement Tracker (personalization) | 📋 Planned |
 
 ---
@@ -186,10 +198,18 @@ Open [http://localhost:8000](http://localhost:8000) in your browser.
 |--------|----------|-------------|
 | `POST` | `/session/new` | Create session (class, size, keywords) |
 | `POST` | `/session/{id}/action` | Submit player action |
+| `POST` | `/session/{id}/combat/init` | Initiate combat encounter |
+| `POST` | `/session/{id}/combat/resolve` | Submit combat result |
+| `GET` | `/session/{id}/combat` | Get combat state |
 | `GET` | `/session/{id}/history` | Get turn history |
 | `GET` | `/session/{id}` | Get session state |
 | `GET` | `/sessions` | List all sessions |
 | `DELETE` | `/session/{id}` | Delete a session |
+| `POST` | `/auth/login` | Login (JWT) |
+| `POST` | `/auth/create-user` | Admin: create user |
+| `POST` | `/auth/tester-request` | Request tester access |
+| `GET` | `/user/me` | Get current user |
+| `GET` | `/user/dashboard` | User dashboard data |
 | `GET` | `/health` | Server status |
 
 ### Example: Create Session
@@ -210,13 +230,13 @@ POST /session/new
 
 | Class | STR | DEX | INT | CON | CHA | WIS | HP Bonus | Mana Bonus | Abilities |
 |-------|-----|-----|-----|-----|-----|-----|----------|------------|----------|
-| ⚔️ Warrior | 14 | 10 | 8 | 12 | 8 | 8 | +15 | +0 | Power Strike, Shield Block, Battle Cry, Cleave |
-| 🗡️ Rogue | 10 | 14 | 10 | 8 | 10 | 8 | +5 | +5 | Backstab, Dodge, Poison Blade, Shadow Step |
-| 🔮 Wizard | 6 | 8 | 14 | 12 | 8 | 12 | -5 | +20 | Fireball, Ice Shield, Lightning Bolt, Arcane Barrier |
-| ✨ Cleric | 10 | 8 | 10 | 10 | 10 | 12 | +5 | +10 | Heal, Smite, Bless, Holy Shield |
-| 🎵 Bard | 8 | 10 | 10 | 8 | 14 | 10 | +0 | +10 | Inspire, Mock, Charm, Dissonance |
+| ⚔️ Warrior | 14 | 10 | 8 | 12 | 8 | 8 | +15 | +0 | Power Strike, Guard, Cleave, War Cry |
+| 🗡️ Rogue | 10 | 14 | 10 | 8 | 10 | 8 | +5 | +5 | Backstab, Evade, Poison Blade, Shadow Step |
+| 🔮 Wizard | 6 | 8 | 14 | 12 | 8 | 12 | -5 | +20 | Arcane Bolt, Focus Mind, Lightning Bolt, Arcane Shield |
+| ✨ Cleric | 10 | 8 | 10 | 10 | 10 | 12 | +5 | +10 | Heal, Smite, Holy Shield, Purify |
+| 🎵 Bard | 8 | 10 | 10 | 8 | 14 | 10 | +0 | +10 | Mock, Inspire, Dissonance, Lullaby |
 
-Each class starts with unique equipment. Abilities have damage dice (e.g. `2d8+3`), mana costs, and status effects (stunned, burning, blessed, etc.).
+Each class has 4 abilities using a unified status effect system. Abilities interact with dice mechanics — some apply **bleed** (DoT), **stun** (skip turn), **weaken** (halve damage), **focus** (+5 to next roll), or **blocking** (+3 armor). See [Combat Depth](#combat-depth-system) for details.
 
 ---
 
@@ -231,6 +251,42 @@ Each class starts with unique equipment. Abilities have damage dice (e.g. `2d8+3
 Templates enforce narrative pacing (combat, social, exploration, choice beats) while the AI fills in creative content. Soft enforcement with escalation — if you avoid combat too long, the story pushes you into it.
 
 ---
+
+## Combat Depth System
+
+### Status Effects
+
+All status effects are governed by a unified registry (`STATUS_EFFECT_RULES`) that defines behavior for both backend and frontend:
+
+| Effect | Icon | Mechanic | Duration |
+|--------|------|----------|----------|
+| 🩸 Bleed | DoT: 2–4 damage/turn | 2–3 turns |
+| 💫 Stun | Skip next turn | 1 turn |
+| 📉 Weaken | Halve outgoing damage | 2 turns |
+| 🎯 Focus | +5 to next d20 roll | 1 turn |
+| ☠️ Poison | DoT: 1–4 damage/turn | 3–5 turns |
+| 🔥 Burning | DoT: 1–3 damage/turn | 2–3 turns |
+| 🛡️ Blocking | +3 armor | 1 turn |
+| 💨 Dodging | 50% chance to avoid attack | 1 turn |
+
+### 6-Phase Turn Structure
+
+Every combat turn follows this order:
+
+1. **Apply status effects** — DoT ticks, HoT, narrative log messages
+2. **Can act?** — Stun → skip turn
+3. **Execute action** — attack/ability/flee
+4. **Resolve dice roll** — d20 + roll modifiers (focus, stealth)
+5. **Calculate damage** — base × damage modifier (weakened → ×0.5), apply target effects
+6. **Apply damage + update state** — dodge chance checked, HP updated
+
+### Effect Rules
+- **Non-stacking**: Reapplying an effect refreshes duration instead of stacking
+- **Duration cap**: Each effect has a max duration (prevents infinite effects)
+- **Registry-driven**: Both backend and frontend use identical rule tables
+
+### Narration
+Status effects are described narratively — never mechanically. "Blood trickles from the wound, refusing to clot" instead of "bleed for 3 turns (-2 HP/tick)".
 
 ## Probability System
 
@@ -255,8 +311,15 @@ Every action goes through:
 - [x] Character class system
 - [x] Structured campaign templates
 - [x] Turn-based combat with dice mechanics
-- [ ] RL-based player personalization
+- [x] Combat depth (status effects, abilities, 6-phase turns)
+- [x] Context-aware combat (narrator-driven enemy selection)
+- [x] Combat tension tracker (contextual, risk-based)
+- [x] Combat mode enforcement (system-driven, not narrator-dependent)
+- [x] Campaign deviation tracking (immersive warnings)
+- [x] Auth + user management (JWT, bcrypt, admin creation)
+- [x] Campaign history persistence
 - [x] Deterministic loot tables
+- [ ] RL-based player personalization
 
 ---
 

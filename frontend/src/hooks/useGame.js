@@ -70,6 +70,7 @@ export function useGame() {
         setSidebar({
           name: player_name,
           level: 1,
+          turn: 1,
           xp: 0, xpToNext: 100,
           hp: data.player.hp, maxHp: data.player.max_hp,
           mana: data.player.mana, maxMana: data.player.max_mana,
@@ -93,9 +94,10 @@ export function useGame() {
   const onDiceAnimationComplete = useCallback(() => {
     setDiceResult(null);
     const data = pendingResponse;
-    if (!data) return;
+    if (!data) { setBusy(false); return; }
     setPendingResponse(null);
     _processResponse(data);
+    setBusy(false);
   }, [pendingResponse]);
 
   // Shared response processing (called either directly or after dice animation)
@@ -168,6 +170,7 @@ export function useGame() {
       mana: data.player_mana,
       maxMana: data.max_mana || prev.maxMana,
       beat: data.current_beat || prev.beat,
+      turn: data.turn_number ?? prev.turn,
       inventory: data.inventory || prev.inventory,
       npcs: data.npcs || prev.npcs,
       lastRoll: data.requires_roll ? {
@@ -184,11 +187,30 @@ export function useGame() {
 
     // Game over states
     if (data.game_over) {
+      if (data.game_over_reason === 'lost_focus') {
+        addMessage('system', `<em>⚠ ${data.narration || 'You have strayed too far from your path. The journey collapses.'}</em>`);
+      }
       setTimeout(() => { setGameOver(true); setCampaignEnded(true); }, 1500);
     } else if (data.victory) {
       setTimeout(() => { setVictory(true); setCampaignEnded(true); }, 1500);
     } else if (data.campaign_ended && !combatData) {
       setTimeout(() => setCampaignEnded(true), 1500);
+    }
+
+    // Show warning if present (immersive, not system-y)
+    if (data.warning_message && !data.game_over) {
+      addMessage('system', `<em>${data.warning_message}</em>`);
+    }
+
+    // Auto-activate combat if combat_data present
+    // The narration card shows the combat intro, then combat starts automatically
+    if (combatData) {
+      setTimeout(() => {
+        const cs = createCombatState(combatData);
+        setCombat(cs);
+        // Clear narration after combat starts so it doesn't block
+        setNarration(prev => prev?.combatData ? null : prev);
+      }, 2500);  // Delay to let player read the narration
     }
   }, [addMessage]);
 
@@ -208,16 +230,18 @@ export function useGame() {
       if (data.dice_result) {
         setDiceResult(data.dice_result);
         setPendingResponse(data);
-        // Response will be processed in onDiceAnimationComplete
+        setLoading(false);
+        // busy stays true until onDiceAnimationComplete finishes
       } else {
         // No dice roll — process immediately
         _processResponse(data);
+        setLoading(false);
+        setBusy(false);
       }
 
     } catch (e) {
       removeMessage(loadingId);
       addMessage('system', '⚠ Something went wrong: ' + e.message);
-    } finally {
       setLoading(false);
       setBusy(false);
     }
