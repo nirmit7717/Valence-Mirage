@@ -500,7 +500,7 @@ async def submit_action(session_id: str, req: ActionRequest):
                 game_over_reason=None,
                 campaign_ended=False,
                 victory=False,
-                pending_outcome={"type": "combat_start"},
+                pending_outcome=None,  # combat_active handled directly by frontend
             )
         else:
             # Combat data corrupt — clear it and continue as narrative
@@ -913,7 +913,7 @@ async def submit_action(session_id: str, req: ActionRequest):
             current_beat=current_beat_title,
             npc_dialogue=npc_dialogue,
             npcs=[{"name": n.get("personality",{}).get("name","?"), "role": n.get("personality",{}).get("role","?"), "disposition": n.get("disposition",0)} for n in session.world_state.get("npcs", {}).values()],
-            choices=extract_choices(narration),
+            choices=[] if combat_started_no_roll else extract_choices(narration),
             combat_started=combat_started_no_roll,
             combat_data=combat_data_no_roll,
             campaign_ended=False,  # Deferred via pending_outcome
@@ -1312,7 +1312,7 @@ async def submit_action(session_id: str, req: ActionRequest):
         current_act=session.world_state.get("current_act", 1),
         npc_dialogue=npc_dialogue,
         npcs=[{"name": n.get("personality",{}).get("name","?"), "role": n.get("personality",{}).get("role","?"), "disposition": n.get("disposition",0)} for n in session.world_state.get("npcs", {}).values()],
-        choices=extract_choices(narration),
+        choices=[] if combat_started else extract_choices(narration),
         combat_started=combat_started,
         combat_data=combat_data,
         campaign_ended=False,  # Deferred via pending_outcome
@@ -1550,11 +1550,12 @@ async def resolve_combat(session_id: str, req: CombatResolveRequest):
         "max_hp": session.player.max_hp,
         "max_mana": session.player.max_mana,
         "inventory": [{"name": i.name, "type": i.item_type} for i in session.player.inventory],
-        "campaign_ended": campaign_ended_flag,
-        "game_over": game_over,
-        "victory": victory,
+        "campaign_ended": False,  # Deferred via pending_outcome
+        "game_over": False,
+        "victory": False,
         "campaign_objective": session.world_state.get("campaign_objective", ""),
         "combat_source": None,
+        "pending_outcome": ({"type": "game_over", "reason": "death"} if game_over else {"type": "victory"} if victory else None),
     }
 
 

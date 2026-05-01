@@ -102,6 +102,14 @@ export function useGame() {
 
   // Shared response processing (called either directly or after dice animation)
   const _processResponse = useCallback((data) => {
+    // Combat guard: server says combat is active but frontend hasn't entered combat mode
+    // Directly activate combat without narration
+    if (data.outcome === 'combat_active' && data.combat_data) {
+      const cs = createCombatState(data.combat_data);
+      setCombat(cs);
+      setBusy(false);
+      return;
+    }
     // Extract arrow choices
     let cleanNarration = data.narration || '';
     const arrowChoices = [];
@@ -261,14 +269,9 @@ export function useGame() {
 
       setCombat(null);
 
-      if (data.game_over) {
-        // Player died in combat
-        addMessage('system', `<strong>💀 Fallen...</strong><br/>${data.narration || 'The darkness claims you.'}`);
-        if (data.narration) {
-          setNarration({ html: data.narration, meta: null, choices: null, combatData: null });
-        }
-        setTimeout(() => { setGameOver(true); setCampaignEnded(true); }, 1500);
-      } else if (result === 'victory') {
+      const po = data.pending_outcome;
+
+      if (result === 'victory') {
         let msg = '<strong>🏆 Victory!</strong>';
         if (data.rewards?.xp) msg += `<br/>+${data.rewards.xp} XP`;
         if (data.rewards?.loot_descriptions) data.rewards.loot_descriptions.forEach(l => msg += `<br/>${l}`);
@@ -277,22 +280,26 @@ export function useGame() {
 
         if (data.narration) {
           addMessage('system', data.narration);
-          // Show narration card with post-combat story + choices
           const arrowChoices = [];
           let cleanNarr = (data.narration || '').replace(/^(?:→|->)\s*(.+)$/gm, (_, choice) => { arrowChoices.push(choice.trim()); return ''; }).trim();
           const choices = arrowChoices.length > 0 ? arrowChoices : (data.choices || null);
-          setNarration({ html: cleanNarr, meta: null, choices, combatData: null });
-        }
-
-        if (data.victory) {
-          setTimeout(() => { setVictory(true); setCampaignEnded(true); }, 1500);
+          setNarration({ html: cleanNarr, meta: null, choices, combatData: null, pendingOutcome: po });
+        } else if (po) {
+          // No narration but pending outcome (shouldn't happen, but safety)
+          setTimeout(() => {
+            if (po.type === 'game_over') { setGameOver(true); setCampaignEnded(true); }
+            else if (po.type === 'victory') { setVictory(true); setCampaignEnded(true); }
+          }, 600);
         }
       } else {
-        // Defeat (survived)
-        addMessage('system', '<strong>💀 Defeat...</strong><br/>The darkness claims you.');
+        // Defeat / death
+        addMessage('system', `<strong>💀 Fallen...</strong><br/>${data.narration || 'The darkness claims you.'}`);
         if (data.narration) {
-          addMessage('system', data.narration);
-          setNarration({ html: data.narration, meta: null, choices: data.choices || null, combatData: null });
+          setNarration({ html: data.narration, meta: null, choices: data.choices || null, combatData: null, pendingOutcome: po });
+        } else if (po) {
+          setTimeout(() => {
+            if (po.type === 'game_over') { setGameOver(true); setCampaignEnded(true); }
+          }, 600);
         }
       }
 
@@ -309,9 +316,7 @@ export function useGame() {
         objective: data.campaign_objective || prev.objective,
       } : prev);
 
-      if (data.campaign_ended && !data.game_over && !data.victory) {
-        setTimeout(() => setCampaignEnded(true), 1500);
-      }
+      // Legacy fallback — shouldn't trigger with pending_outcome system
 
     } catch (e) {
       setCombat(null);
