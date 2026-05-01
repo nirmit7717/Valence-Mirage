@@ -17,7 +17,7 @@ MAJOR_DEVIATION = "major"          # Clearly off-track
 
 # Thresholds
 SLIGHT_THRESHOLD = 0.15   # alignment below this → slight deviation
-MAJOR_THRESHOLD = -0.2    # alignment below this → major deviation (stricter)
+MAJOR_THRESHOLD = -0.1    # alignment below this → major deviation
 
 
 def evaluate_alignment(
@@ -93,19 +93,15 @@ def evaluate_alignment(
                 connection_found = True
                 break
 
-    # 6. Action type keywords that are always valid
+    # 6. Action type keywords that are always valid (only basic exploration/interaction)
     always_valid = {
-        "look", "search", "examine", "inspect", "investigate", "check",
-        "listen", "watch", "observe", "explore", "walk", "move", "go",
-        "enter", "open", "close", "take", "pick", "grab", "read",
-        "talk", "speak", "ask", "tell", "say", "shout", "whisper",
-        "rest", "wait", "hide", "sneak", "run", "follow", "sit",
+        "look", "search", "examine", "inspect", "investigate",
+        "listen", "watch", "observe", "explore",
+        "talk", "speak", "ask", "tell",
+        "rest", "wait", "hide", "sneak",
         "attack", "fight", "defend", "block", "dodge", "cast", "heal",
-        "use", "drink", "eat", "equip", "draw", "sheath",
-        "help", "save", "protect", "find", "seek", "try", "attempt",
-        "build", "make", "craft", "carve", "create", "write", "draw",
-        "sing", "play", "dance", "sit", "stand", "sleep", "wake",
-        "think", "remember", "recall", "wonder", "consider", "decide",
+        "use", "drink", "eat", "equip",
+        "help", "save", "protect", "find", "seek",
     }
     if tokens & always_valid:
         score += 0.15
@@ -113,7 +109,9 @@ def evaluate_alignment(
 
     # 7. Penalty for completely disconnected actions
     if not connection_found and score <= 0:
-        score -= 0.15  # Moderate penalty, not extreme
+        score -= 0.35  # Stronger penalty for truly disconnected actions
+    elif not connection_found:
+        score -= 0.2  # Even with a small positive score, lack of connection is penalized
 
     # Clamp
     score = max(-1.0, min(1.0, score))
@@ -128,12 +126,15 @@ def evaluate_alignment(
     else:
         classification = MAJOR_DEVIATION
 
-    # False positive check: if ANY connection exists, never classify as major
-    if classification == MAJOR_DEVIATION and connection_found:
+    # False positive check: if STRONG connection exists, never classify as major
+    # A single weak overlap shouldn't prevent major classification for truly off-track actions
+    if classification == MAJOR_DEVIATION and score >= -0.1:
         classification = SLIGHT_DEVIATION
 
-    # Second false positive check: if action uses common verbs, never major
-    if classification == MAJOR_DEVIATION and (tokens & always_valid):
+    # Common verbs alone don't prevent major classification
+    # Only prevent if the action has SPECIFIC game verbs (attack, cast, etc.)
+    game_verbs = {"attack", "fight", "defend", "cast", "heal", "use", "equip", "drink", "think", "try", "wait"}
+    if classification == MAJOR_DEVIATION and (tokens & game_verbs):
         classification = SLIGHT_DEVIATION
 
     return classification, score

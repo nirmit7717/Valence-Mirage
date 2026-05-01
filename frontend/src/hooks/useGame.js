@@ -151,12 +151,14 @@ export function useGame() {
 
     // Combat data
     const combatData = (data.combat_started && data.combat_data) ? data.combat_data : null;
+    const pendingOutcome = data.pending_outcome;  // Two-stage flow: outcome deferred until narration dismissed
 
     setNarration({
       html: data.narration + npcHtml,
       meta: metaHtml,
       choices: data.choices || null,
       combatData: combatData,
+      pendingOutcome: pendingOutcome,
     });
 
     // Update sidebar
@@ -185,7 +187,9 @@ export function useGame() {
 
     setSessionInfo(prev => prev ? { ...prev, turn: data.turn_number } : prev);
 
-    // Game over states
+    // Two-stage flow: transitions are deferred to pending_outcome
+    // Narration shows first, then dismissNarration() triggers the pending outcome
+    // Legacy path: if game_over/victory still sent directly (backward compat)
     if (data.game_over) {
       if (data.game_over_reason === 'lost_focus') {
         addMessage('system', `<em>⚠ ${data.narration || 'You have strayed too far from your path. The journey collapses.'}</em>`);
@@ -196,22 +200,15 @@ export function useGame() {
     } else if (data.campaign_ended && !combatData) {
       setTimeout(() => setCampaignEnded(true), 1500);
     }
+    // If pending_outcome exists, narration handles the transition via dismissNarration
 
     // Show warning if present (immersive, not system-y)
     if (data.warning_message && !data.game_over) {
       addMessage('system', `<em>${data.warning_message}</em>`);
     }
 
-    // Auto-activate combat if combat_data present
-    // The narration card shows the combat intro, then combat starts automatically
-    if (combatData) {
-      setTimeout(() => {
-        const cs = createCombatState(combatData);
-        setCombat(cs);
-        // Clear narration after combat starts so it doesn't block
-        setNarration(prev => prev?.combatData ? null : prev);
-      }, 2500);  // Delay to let player read the narration
-    }
+    // Combat/victory/game-over activation is handled by dismissNarration()
+    // which checks narration.pendingOutcome after the player reads the narration
   }, [addMessage]);
 
   const submitAction = useCallback(async (actionText) => {
@@ -324,13 +321,40 @@ export function useGame() {
 
   const dismissNarration = useCallback(() => {
     setNarration(prev => {
-      if (prev?.combatData) {
+      if (!prev) return null;
+
+      const po = prev.pendingOutcome;
+
+      // Handle pending outcomes after narration is read
+      if (po) {
+        if (po.type === 'game_over') {
+          setTimeout(() => {
+            setGameOver(true);
+            setCampaignEnded(true);
+          }, 600);
+        } else if (po.type === 'victory') {
+          setTimeout(() => {
+            setVictory(true);
+            setCampaignEnded(true);
+          }, 600);
+        } else if (po.type === 'combat_start') {
+          const cd = prev.combatData || po.combat_data;
+          if (cd) {
+            setTimeout(() => {
+              const cs = createCombatState(cd);
+              setCombat(cs);
+            }, 600);
+          }
+        }
+      } else if (prev.combatData) {
+        // Legacy path: combat_data without pending_outcome
         const cd = prev.combatData;
         setTimeout(() => {
           const cs = createCombatState(cd);
           setCombat(cs);
         }, 600);
       }
+
       return null;
     });
   }, []);

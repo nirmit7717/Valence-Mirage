@@ -199,6 +199,8 @@ class ActionResponse(BaseModel):
     game_over_reason: str | None = None
     # ── Dice debug ──
     dice_debug: dict | None = None
+    # ── Two-stage flow ──
+    pending_outcome: dict | None = None  # {"type": "game_over"|"victory"|"combat_start", ...}
 
 
 # SPA routing: static files served via spa_fallback route, no mount needed.
@@ -498,6 +500,7 @@ async def submit_action(session_id: str, req: ActionRequest):
                 game_over_reason=None,
                 campaign_ended=False,
                 victory=False,
+                pending_outcome={"type": "combat_start"},
             )
         else:
             # Combat data corrupt — clear it and continue as narrative
@@ -627,7 +630,6 @@ async def submit_action(session_id: str, req: ActionRequest):
 
         if warning_count >= 3:
             game_over_reason = "lost_focus"
-            # Build a game-over response
             session.world_state["campaign_ended"] = True
             await _record_campaign_end(db, session, "lost_focus")
             session.turn_number += 1
@@ -648,13 +650,14 @@ async def submit_action(session_id: str, req: ActionRequest):
                 max_mana=session.player.max_mana,
                 inventory=[i.model_dump() for i in session.player.inventory],
                 choices=[],
-                game_over=True,
+                game_over=False,  # Deferred — narration first
                 victory=False,
-                campaign_ended=True,
+                campaign_ended=False,
                 campaign_objective=campaign_objective,
                 warning_count=warning_count,
                 warning_message=final_msg,
                 game_over_reason=game_over_reason,
+                pending_outcome={"type": "game_over", "reason": "lost_focus"},
             )
     elif classification == "slight":
         deviation_score = max(-1.0, deviation_score - 0.1)
@@ -913,15 +916,16 @@ async def submit_action(session_id: str, req: ActionRequest):
             choices=extract_choices(narration),
             combat_started=combat_started_no_roll,
             combat_data=combat_data_no_roll,
-            campaign_ended=session.world_state.get("campaign_ended", False),
+            campaign_ended=False,  # Deferred via pending_outcome
             game_over=False,
-            victory=session.world_state.get("campaign_ended", False),
+            victory=False,
             campaign_objective=campaign_objective,
             dice_result=None,
             combat_source=combat_source_no_roll,
             warning_count=warning_count,
             warning_message=warning_message_out,
             dice_debug=None,
+            pending_outcome={"type": "victory"} if session.world_state.get("campaign_ended") else ({"type": "combat_start", "combat_data": combat_data_no_roll} if combat_started_no_roll and combat_data_no_roll else None),
         )
 
     # 3. Vector similarity for probability scoring
@@ -1012,8 +1016,8 @@ async def submit_action(session_id: str, req: ActionRequest):
             max_hp=session.player.max_hp, max_mana=session.player.max_mana,
             inventory=[{"name": i.name, "type": i.item_type} for i in session.player.inventory],
             level_up={}, current_beat=current_beat_title, npc_dialogue=None, npcs=[],
-            choices=[], combat_started=False, combat_data=None, campaign_ended=True,
-            game_over=True, victory=False, campaign_objective=campaign_objective,
+            choices=[], combat_started=False, combat_data=None, campaign_ended=False,
+            game_over=False, victory=False, campaign_objective=campaign_objective,
             dice_result={"rolled": roll, "target": score.dice_threshold,
                         "success": False, "critical": outcome_result == "critical_failure",
                         "type": "check"},
@@ -1021,6 +1025,7 @@ async def submit_action(session_id: str, req: ActionRequest):
             warning_count=warning_count,
             warning_message=None,
             game_over_reason="death",
+            pending_outcome={"type": "game_over", "reason": "death"},
         )
 
     # 7c. Build dice_result for frontend animation
@@ -1310,9 +1315,9 @@ async def submit_action(session_id: str, req: ActionRequest):
         choices=extract_choices(narration),
         combat_started=combat_started,
         combat_data=combat_data,
-        campaign_ended=session.world_state.get("campaign_ended", False),
+        campaign_ended=False,  # Deferred via pending_outcome
         game_over=False,
-        victory=session.world_state.get("campaign_ended", False),
+        victory=False,
         campaign_objective=campaign_objective,
         dice_result=dice_result_payload,
         warning_count=warning_count,
@@ -1327,6 +1332,7 @@ async def submit_action(session_id: str, req: ActionRequest):
             "saturation_penalty": round(score.breakdown.saturation_penalty, 3),
             "final_target": score.dice_threshold,
         },
+        pending_outcome={"type": "victory"} if session.world_state.get("campaign_ended") else ({"type": "combat_start", "combat_data": combat_data} if combat_started and combat_data else None),
     )
 
 

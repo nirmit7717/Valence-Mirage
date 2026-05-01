@@ -152,7 +152,7 @@ export default function NarrativeCard({ narration, onChoice, onDismiss, animatio
 
           {!showChoices && (
             <button className="nc-continue-btn" onClick={(e) => { e.stopPropagation(); handleContinue(); }}>
-              {isLastChunk && narration?.choices?.length ? 'See Options ▸' : 'Continue ▸'}
+              {isLastChunk && narration?.pendingOutcome ? (narration.pendingOutcome.type === 'combat_start' ? '⚔️ Enter Combat ▸' : narration.pendingOutcome.type === 'game_over' ? 'Continue ▸' : narration.pendingOutcome.type === 'victory' ? '🏆 Continue ▸' : 'Continue ▸') : isLastChunk && narration?.choices?.length ? 'See Options ▸' : 'Continue ▸'}
             </button>
           )}
         </div>
