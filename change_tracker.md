@@ -419,3 +419,62 @@ Each class now has **3 focused abilities** using the new effect types:
 
 ---
 *Status: All changes verified, server tested at http://localhost:8000.*
+
+---
+
+## v0.7.2 — System Coherence + Reliability Fixes (2026-05-04)
+
+### 🎨 Dynamic Background Theming
+- **`ui_context` field** added to `ActionResponse` — provides environment, tone, and enemy name per turn
+- **Backend**: `_extract_ui_context()` extracts environment (forest/dungeon/city/ruins/mountain/ocean/desert/underdark/horror) and tone (calm/tense/combat/mystery) from narration keywords
+- **Frontend**: Maps `ui_context.environment` → theme, updates body gradient dynamically every turn
+- **Combat tone**: Auto-switches to horror/dark_fantasy themes during combat
+- Background transitions smoothly (1.2s CSS transition already in place)
+
+### ⚔️ Enemy Name Consistency
+- **All 6 combat initiation points** now store `last_enemy_name` in `world_state`
+- **`ui_context.enemy_name`** carries the tracked name in every response
+- **Single source of truth**: narrator describes → `_extract_enemy_from_narration()` matches → stored in `world_state` → used in UI context
+
+### 🔒 Input Validation Pipeline (redo_turn)
+- **Major deviation** returns immediately with `redo_turn=True` — **does NOT call narrator** (saves API call)
+- Frontend shows warning message, does NOT advance turn or change state
+- Player can retry with a relevant action
+- 3rd major deviation still triggers game over via `pending_outcome`
+- **Kill switch**: `VALIDATION_ENABLED = True` flag — set to `False` to bypass all validation
+- **Safe fallback**: `try/except` around evaluator — if it crashes, action is allowed through
+
+### 🧠 Context Memory for Evaluation
+- **Deviation evaluator** now accepts `turn_history` parameter
+- Checks last 3 turns: player input overlap + narration overlap for richer alignment scoring
+- `connection_found` flag aggregates from beat, narration, objectives, NPCs, AND turn history
+
+### 🐛 Validation False Positive Fix
+- **Root cause**: `always_valid` verb set was missing common combat verbs ("draw", "battle", "charge", "strike") and movement verbs ("run", "swim", "climb", "jump") — valid actions like "I draw my sword" were classified as `major` and blocked
+- **Fix**: Expanded `always_valid` with combat verbs (draw, strike, slash, battle, engage, charge, retreat) and movement verbs (grab, open, push, pull, climb, jump, swim, run, walk)
+- **Off-topic phrase detector**: Overrides verb matches for clearly modern/real-world inputs ("phone", "netflix", "pizza delivery", "income tax", etc.)
+- Verified: combat actions → relevant, off-topic → major
+
+### ⏱️ API Reliability Fixes
+- **Explicit timeouts** on all OpenAI clients: narrator=60s, others=30s
+- **Reduced retries**: max 2 attempts (was 3), max 4s backoff (was 8s)
+- **Narrator `max_tokens`**: 500 (was 800) — reduces latency on slow responses
+- **Worst case**: ~2 min total (was ~5 min on 504 timeout)
+
+### 🎭 UI: Character Class in Sidebar
+- FloatingHUD now shows class in header: `Warrior · Level 1 · Turn 3`
+
+### 📁 Files Changed
+
+**Modified files:**
+- `backend/main.py` — `ui_context`, `VALIDATION_ENABLED` kill switch, try/except on evaluator, `redo_turn` response, enemy name tracking at all 6 combat init points
+- `backend/engines/deviation.py` — Expanded `always_valid` verbs, off-topic phrase detector, `turn_history` parameter
+- `backend/engines/narrator.py` — 60s timeout, max_retries=1, max_tokens=500, reduced tenacity retries
+- `backend/engines/intent_parser.py` — 30s timeout, max_retries=1, reduced retries
+- `backend/engines/campaign_planner.py` — 30s timeout, max_retries=1
+- `backend/engines/npc_engine.py` — 30s timeout, max_retries=1
+- `frontend/src/hooks/useGame.js` — `redo_turn` handling, `ui_context` → dynamic theme, `characterClass` in sidebar
+- `frontend/src/components/FloatingHUD.jsx` — Class name in HUD header
+
+---
+*Status: All changes verified, tested with live game sessions.*

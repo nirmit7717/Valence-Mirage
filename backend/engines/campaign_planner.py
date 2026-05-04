@@ -49,6 +49,8 @@ class CampaignPlanner:
         self.client = AsyncOpenAI(
             base_url=config.NVIDIA_BASE_URL,
             api_key=config.NVIDIA_API_KEY,
+            timeout=30.0,
+            max_retries=1,
         )
         self.prompt = PROMPT_PATH.read_text()
 

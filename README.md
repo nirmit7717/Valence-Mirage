@@ -123,12 +123,13 @@ frontend/
 | AI — Embeddings | NV-EmbedQA-E5 (NVIDIA NIM) |
 | Vector Search | ChromaDB |
 | Storage | SQLite (aiosqlite) |
+| Reliability | 30-60s request timeouts, 2 retry attempts max (4s backoff) |
 
 ---
 
 ## Project Status
 
-**v0.7.1 — Active Development**
+**v0.7.2 — Active Development**
 
 | Phase | Focus | Status |
 |-------|-------|--------|
@@ -140,6 +141,7 @@ frontend/
 | 3.7 | Combat Depth (Status Effects + Abilities) | ✅ Complete |
 | 3.8 | Auth + User Management | ✅ Complete |
 | 3.9 | Combat Enforcement + UI Polish | ✅ Complete |
+| 3.10 | System Coherence (background, validation, context) | ✅ Complete |
 | 4 | RL Engagement Tracker (personalization) | 📋 Planned |
 
 ---
@@ -319,6 +321,11 @@ Every action goes through:
 - [x] Auth + user management (JWT, bcrypt, admin creation)
 - [x] Campaign history persistence
 - [x] Deterministic loot tables
+- [x] Dynamic UI context (background theming per turn)
+- [x] Enemy name consistency (single source of truth)
+- [x] Input validation pipeline (redo_turn, kill switch)
+- [x] Context memory for deviation evaluation (turn history)
+- [x] API reliability (timeouts, retries, max_tokens reduction)
 - [ ] RL-based player personalization
 
 ---

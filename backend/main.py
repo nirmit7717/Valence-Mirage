@@ -598,6 +598,7 @@ async def submit_action(session_id: str, req: ActionRequest):
                 logger.warning(f"NPC dialogue failed: {e}")
 
     # ── Deviation Check ──
+    VALIDATION_ENABLED = True  # Kill switch: set False to bypass all validation
     warning_count = session.world_state.get("warning_count", 0)
     deviation_score = session.world_state.get("deviation_score", 0.0)
     warning_message_out = None
@@ -615,15 +616,24 @@ async def submit_action(session_id: str, req: ActionRequest):
     recent_narration = session.world_state.get("situation", "")[-300:]
     location = session.world_state.get("location", "")
 
-    classification, alignment = evaluate_alignment(
-        action=req.action,
-        current_beat=current_beat_title,
-        recent_narration=recent_narration,
-        campaign_objective=campaign_objective,
-        location=location,
-        npc_names=npc_names,
-        turn_history=session.turn_history[-3:] if session.turn_history else None,
-    )
+    if not VALIDATION_ENABLED:
+        classification = "relevant"
+        alignment = 0.5
+    else:
+        try:
+            classification, alignment = evaluate_alignment(
+                action=req.action,
+                current_beat=current_beat_title,
+                recent_narration=recent_narration,
+                campaign_objective=campaign_objective,
+                location=location,
+                npc_names=npc_names,
+                turn_history=session.turn_history[-3:] if session.turn_history else None,
+            )
+        except Exception as e:
+            logger.warning(f"Deviation eval failed, allowing action: {e}")
+            classification = "relevant"
+            alignment = 0.5
 
     logger.info(f"Deviation: {classification} (alignment={alignment:.2f}, warnings={warning_count})")
 

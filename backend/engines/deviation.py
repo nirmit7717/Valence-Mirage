@@ -129,8 +129,11 @@ def evaluate_alignment(
         "talk", "speak", "ask", "tell",
         "rest", "wait", "hide", "sneak",
         "attack", "fight", "defend", "block", "dodge", "cast", "heal",
-        "use", "drink", "eat", "equip",
+        "draw", "strike", "slash", "stab", "shoot", "aim",
+        "battle", "combat", "engage", "charge", "retreat", "flee",
+        "use", "drink", "eat", "equip", "grab", "take",
         "help", "save", "protect", "find", "seek",
+        "open", "close", "push", "pull", "climb", "jump", "swim", "run", "walk",
     }
     if tokens & always_valid:
         score += 0.15
@@ -141,6 +144,16 @@ def evaluate_alignment(
         score -= 0.35  # Stronger penalty for truly disconnected actions
     elif not connection_found:
         score -= 0.2  # Even with a small positive score, lack of connection is penalized
+
+    # Off-topic phrase detection — override always_valid for clearly modern/real-world actions
+    off_topic_phrases = [
+        "phone", "text message", "netflix", "movie", "youtube", "reddit", "twitter",
+        "instagram", "social media", "pizza delivery", "income tax", "taxes",
+        "alarm clock", "grocery store", "coffee shop", "uber", "lyft",
+        "videogame", "video game", "remote control", "microwave", "refrigerator",
+    ]
+    if any(phrase in action_lower for phrase in off_topic_phrases):
+        score = min(score, -0.2)  # Force negative regardless of verb matches
 
     # Clamp
     score = max(-1.0, min(1.0, score))

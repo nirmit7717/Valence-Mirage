@@ -21,10 +21,12 @@ class IntentParser:
         self.client = AsyncOpenAI(
             base_url=config.NVIDIA_BASE_URL,
             api_key=config.NVIDIA_API_KEY,
+            timeout=30.0,
+            max_retries=1,
         )
         self.system_prompt = PROMPT_PATH.read_text()
 
-    @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=8))
+    @retry(stop=stop_after_attempt(2), wait=wait_exponential(multiplier=1, min=1, max=4))
     async def _safe_chat_completion(self, messages):
         return await self.client.chat.completions.create(
             model=config.INTENT_MODEL,

@@ -24,13 +24,15 @@ class Narrator:
         self.client = AsyncOpenAI(
             base_url=config.NVIDIA_BASE_URL,
             api_key=config.NVIDIA_API_KEY,
+            timeout=60.0,        # Fail fast instead of waiting 5min for 504
+            max_retries=1,      # Reduce from default 2 retries
         )
         self.prompt = PROMPT_PATH.read_text()
         combat_prompt_path = Path(__file__).parent.parent / "prompts" / "combat_narrator.txt"
         self.combat_prompt = combat_prompt_path.read_text()
         self.rule_retriever = RuleRetriever()
 
-    @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=8))
+    @retry(stop=stop_after_attempt(2), wait=wait_exponential(multiplier=1, min=1, max=4))
     async def _safe_chat_completion(self, messages, max_tokens):
         """Wrapper for OpenAI call with tenacity retry."""
         return await self.client.chat.completions.create(
@@ -149,7 +151,7 @@ class Narrator:
                     {"role": "user", "content": user_msg},
                 ],
                 temperature=0.85,
-                max_tokens=800,
+                max_tokens=500,
             )
             narration = response.choices[0].message.content.strip()
             logger.debug(f"Narration: {narration[:100]}...")
