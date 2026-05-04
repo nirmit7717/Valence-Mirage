@@ -27,6 +27,7 @@ def evaluate_alignment(
     campaign_objective: str,
     location: str,
     npc_names: list[str] | None = None,
+    turn_history: list | None = None,
 ) -> tuple[str, float]:
     """Evaluate how well a player action aligns with the campaign.
 
@@ -68,6 +69,34 @@ def evaluate_alignment(
             elif all(len(w) >= 5 for w in overlap):
                 score += 0.1
                 connection_found = True
+
+    # 2b. Check against recent turn history (last 3 turns)
+    if turn_history:
+        for turn in turn_history[-3:]:
+            turn_narr = ""
+            if isinstance(turn, dict):
+                outcome = turn.get("outcome", {})
+                if isinstance(outcome, dict):
+                    turn_narr = outcome.get("narration", "")
+                player_input = turn.get("player_input", "")
+            elif hasattr(turn, "outcome") and hasattr(turn.outcome, "narration"):
+                turn_narr = turn.outcome.narration or ""
+                player_input = turn.player_input or ""
+            else:
+                continue
+            # Check player input overlap (actions player has been taking)
+            input_tokens = set(re.findall(r'\b\w{3,}\b', player_input.lower())) - common
+            overlap = tokens & input_tokens
+            if overlap:
+                score += min(0.15, len(overlap) * 0.05)
+                connection_found = True
+            # Check narration overlap
+            if turn_narr:
+                tn_tokens = set(re.findall(r'\b\w{4,}\b', turn_narr[-200:].lower())) - common
+                overlap2 = tokens & tn_tokens
+                if overlap2:
+                    score += min(0.1, len(overlap2) * 0.03)
+                    connection_found = True
 
     # 3. Check against campaign objective
     if campaign_objective:

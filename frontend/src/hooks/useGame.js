@@ -69,6 +69,7 @@ export function useGame() {
       if (data.player) {
         setSidebar({
           name: player_name,
+          characterClass: character_class,
           level: 1,
           turn: 1,
           xp: 0, xpToNext: 100,
@@ -109,6 +110,33 @@ export function useGame() {
       setCombat(cs);
       setBusy(false);
       return;
+    }
+
+    // Input validation: irrelevant action — don't advance turn, show warning
+    if (data.redo_turn) {
+      addMessage('system', `<em>⚠ ${data.warning_message || data.narration || 'That action doesn\'t seem relevant.'}</em>`);
+      setBusy(false);
+      return;
+    }
+
+    // Dynamic UI context — update theme based on environment/tone
+    if (data.ui_context) {
+      const env = data.ui_context.environment;
+      const tone = data.ui_context.tone;
+      // Map environment to theme
+      const envThemeMap = {
+        forest: 'forest', dungeon: 'underdark', city: 'fantasy', ruins: 'ruins',
+        mountain: 'mountain', ocean: 'ocean', desert: 'desert',
+        underdark: 'underdark', horror: 'horror',
+      };
+      const newTheme = envThemeMap[env] || 'default';
+      if (newTheme !== 'default') {
+        setTheme(newTheme);
+      }
+      // Combat overlay — switch to horror/dark theme during combat
+      if (tone === 'combat') {
+        setTheme(prev => (prev === 'default' ? 'dark_fantasy' : prev));
+      }
     }
     // Extract arrow choices
     let cleanNarration = data.narration || '';

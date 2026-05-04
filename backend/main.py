@@ -201,6 +201,10 @@ class ActionResponse(BaseModel):
     dice_debug: dict | None = None
     # ── Two-stage flow ──
     pending_outcome: dict | None = None  # {"type": "game_over"|"victory"|"combat_start", ...}
+    # ── UI context ──
+    ui_context: dict | None = None  # {"environment": "...", "tone": "...", "enemy_name": "..."}
+    # ── Input validation ──
+    redo_turn: bool = False  # True = don't advance turn, let player retry
 
 
 # SPA routing: static files served via spa_fallback route, no mount needed.
@@ -501,6 +505,7 @@ async def submit_action(session_id: str, req: ActionRequest):
                 campaign_ended=False,
                 victory=False,
                 pending_outcome=None,  # combat_active handled directly by frontend
+                ui_context={"environment": "dungeon", "tone": "combat", "enemy_name": enemy.get("name")},
             )
         else:
             # Combat data corrupt — clear it and continue as narrative
@@ -617,6 +622,7 @@ async def submit_action(session_id: str, req: ActionRequest):
         campaign_objective=campaign_objective,
         location=location,
         npc_names=npc_names,
+        turn_history=session.turn_history[-3:] if session.turn_history else None,
     )
 
     logger.info(f"Deviation: {classification} (alignment={alignment:.2f}, warnings={warning_count})")
@@ -629,6 +635,7 @@ async def submit_action(session_id: str, req: ActionRequest):
         warning_message_out = get_warning_message(warning_count)
 
         if warning_count >= 3:
+            # Game over — too many deviations
             game_over_reason = "lost_focus"
             session.world_state["campaign_ended"] = True
             await _record_campaign_end(db, session, "lost_focus")
@@ -658,7 +665,31 @@ async def submit_action(session_id: str, req: ActionRequest):
                 warning_message=final_msg,
                 game_over_reason=game_over_reason,
                 pending_outcome={"type": "game_over", "reason": "lost_focus"},
+                ui_context={"environment": "default", "tone": "tense"},
             )
+        # Warning < 3 — don't call narrator, let player retry
+        session.world_state["warning_count"] = warning_count
+        return ActionResponse(
+            turn_number=session.turn_number,
+            intent=intent,
+            requires_roll=False,
+            outcome="irrelevant_action",
+            narration=warning_message_out or "That action doesn't seem relevant to your current situation.",
+            state_changes=StateChanges(),
+            player_hp=session.player.hp,
+            player_mana=session.player.mana,
+            player_level=session.player.level,
+            player_xp=session.player.xp,
+            player_xp_to_next=session.player.xp_to_next,
+            max_hp=session.player.max_hp,
+            max_mana=session.player.max_mana,
+            inventory=[i.model_dump() for i in session.player.inventory],
+            choices=[],
+            warning_count=warning_count,
+            warning_message=warning_message_out,
+            redo_turn=True,
+            ui_context={"environment": "default", "tone": "tense"},
+        )
     elif classification == "slight":
         deviation_score = max(-1.0, deviation_score - 0.1)
         session.world_state["deviation_score"] = deviation_score
@@ -777,6 +808,7 @@ async def submit_action(session_id: str, req: ActionRequest):
                     enemy_tier=enemy_tier,
                 )
                 session.world_state["combat"] = combat.model_dump()
+                session.world_state["last_enemy_name"] = enemy.name  # Track for consistency
                 combat_started_no_roll = True
                 enemy = combat.enemies[0]
                 player_armor = combat_engine_local._calc_player_armor(session.player)
@@ -823,6 +855,7 @@ async def submit_action(session_id: str, req: ActionRequest):
                         enemy_tier=enemy_tier,
                     )
                     session.world_state["combat"] = combat.model_dump()
+                    session.world_state["last_enemy_name"] = enemy.name
                     combat_started_no_roll = True
                     enemy = combat.enemies[0]
                     player_armor = combat_engine_local._calc_player_armor(session.player)
@@ -926,6 +959,7 @@ async def submit_action(session_id: str, req: ActionRequest):
             warning_message=warning_message_out,
             dice_debug=None,
             pending_outcome={"type": "victory"} if session.world_state.get("campaign_ended") else ({"type": "combat_start", "combat_data": combat_data_no_roll} if combat_started_no_roll and combat_data_no_roll else None),
+            ui_context=_extract_ui_context(narration, session.world_state, combat_started_no_roll),
         )
 
     # 3. Vector similarity for probability scoring
@@ -1026,6 +1060,7 @@ async def submit_action(session_id: str, req: ActionRequest):
             warning_message=None,
             game_over_reason="death",
             pending_outcome={"type": "game_over", "reason": "death"},
+            ui_context=_extract_ui_context(death_message, session.world_state, False),
         )
 
     # 7c. Build dice_result for frontend animation
@@ -1069,6 +1104,7 @@ async def submit_action(session_id: str, req: ActionRequest):
                         combat_started = True
                         combat_beat_available = True
                         enemy = combat.enemies[0]
+                        session.world_state["last_enemy_name"] = enemy.name
                         player_armor = combat_engine_local._calc_player_armor(session.player)
                         attack_bonus = combat_engine_local._calc_attack_bonus(session.player)
                         combat_data = {
@@ -1116,6 +1152,7 @@ async def submit_action(session_id: str, req: ActionRequest):
                             combat_started = True
                             combat_beat_available = True
                             enemy = combat.enemies[0]
+                            session.world_state["last_enemy_name"] = enemy.name
                             player_armor = combat_engine_local._calc_player_armor(session.player)
                             attack_bonus = combat_engine_local._calc_attack_bonus(session.player)
                             combat_data = {
@@ -1182,6 +1219,7 @@ async def submit_action(session_id: str, req: ActionRequest):
                         session.world_state["combat"] = combat.model_dump()
                         combat_started = True
                         enemy = combat.enemies[0]
+                        session.world_state["last_enemy_name"] = enemy.name
                         player_armor = combat_engine_local._calc_player_armor(session.player)
                         attack_bonus = combat_engine_local._calc_attack_bonus(session.player)
                         combat_data = {
@@ -1226,6 +1264,7 @@ async def submit_action(session_id: str, req: ActionRequest):
                                 enemy_tier=enemy_tier,
                             )
                             session.world_state["combat"] = combat.model_dump()
+                            session.world_state["last_enemy_name"] = enemy.name
                             combat_started = True
                             enemy = combat.enemies[0]
                             player_armor = combat_engine_local_fb._calc_player_armor(session.player)
@@ -1333,6 +1372,7 @@ async def submit_action(session_id: str, req: ActionRequest):
             "final_target": score.dice_threshold,
         },
         pending_outcome={"type": "victory"} if session.world_state.get("campaign_ended") else ({"type": "combat_start", "combat_data": combat_data} if combat_started and combat_data else None),
+        ui_context=_extract_ui_context(narration, session.world_state, combat_started),
     )
 
 
@@ -1689,6 +1729,51 @@ async def _record_campaign_end(db: Database, session, result: str):
 
 
 # ─── Enemy extraction from narration ───
+
+def _extract_ui_context(narration: str, world_state: dict, combat_active: bool) -> dict:
+    """Extract environment and tone from narration for dynamic UI theming."""
+    text = (narration or "").lower()
+    situation = (world_state.get("situation", "") or "").lower()
+    combined = text + " " + situation
+
+    # Environment detection
+    env_keywords = {
+        "forest": ["forest", "tree", "woodland", "grove", "jungle", "druid", "elf"],
+        "dungeon": ["dungeon", "crypt", "catacomb", "cell", "prison", "cavern", "cave", "underground"],
+        "city": ["city", "town", "village", "market", "tavern", "street", "castle", "throne"],
+        "ruins": ["ruin", "ancient", "temple", "crumble", "decrepit", "abandoned", "forgotten"],
+        "mountain": ["mountain", "peak", "summit", "cliff", "dwarf", "forge"],
+        "ocean": ["ocean", "sea", "ship", "island", "pirate", "shore", "coast"],
+        "desert": ["desert", "sand", "dune", "arid", "pyramid", "oasis"],
+        "underdark": ["underdark", "drow", "mind flayer", "illithid", "deep"],
+        "horror": ["undead", "zombie", "skeleton", "ghost", "wraith", "vampire", "necromanc", "haunt"],
+    }
+    environment = "default"
+    for env, keywords in env_keywords.items():
+        if any(kw in combined for kw in keywords):
+            environment = env
+            break
+
+    # Tone detection
+    if combat_active:
+        tone = "combat"
+    elif any(w in combined for w in ["danger", "threat", "ambush", "enemy", "attack", "darkness", "shadow"]):
+        tone = "tense"
+    elif any(w in combined for w in ["mystery", "secret", "hidden", "riddle", "puzzle", "enigma"]):
+        tone = "mystery"
+    else:
+        tone = "calm"
+
+    # Enemy name from world state
+    enemy_name = None
+    combat = world_state.get("combat")
+    if combat and combat.get("enemies"):
+        enemy_name = combat["enemies"][0].get("name")
+    elif world_state.get("last_enemy_name"):
+        enemy_name = world_state["last_enemy_name"]
+
+    return {"environment": environment, "tone": tone, "enemy_name": enemy_name}
+
 
 def _extract_enemy_from_narration(narration: str, player_level: int) -> tuple[str | None, str | None]:
     """Extract enemy name from narrator output and match to an enemy template.

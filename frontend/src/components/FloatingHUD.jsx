@@ -9,7 +9,7 @@ export default function FloatingHUD({ data }) {
     <div className="hud-sidebar">
       <div className="hud-section hud-char">
         <div className="hud-name">{data.name}</div>
-        <div className="hud-level">Level {data.level} · Turn {data.turn || '—'}</div>
+        <div className="hud-level">{data.characterClass ? data.characterClass.charAt(0).toUpperCase() + data.characterClass.slice(1) : ''} · Level {data.level} · Turn {data.turn || '—'}</div>
       </div>
 
       <div className="hud-divider" />
