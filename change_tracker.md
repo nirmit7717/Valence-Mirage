@@ -477,4 +477,55 @@ Each class now has **3 focused abilities** using the new effect types:
 - `frontend/src/components/FloatingHUD.jsx` — Class name in HUD header
 
 ---
-*Status: All changes verified, tested with live game sessions.*
+
+## v0.8.0 — RL Engagement Tracker + Multi-page Router (2026-05-07)
+
+### 🧠 Phase 4: RL Engagement Tracker
+- **PlayerProfile model**: 6 affinity dimensions (combat, exploration, social, narrative depth, risk tolerance, pacing) — range -1.0 to 1.0
+- **EngagementTracker**: Per-turn signal collection (action type, combat, NPC, timing, resources) → session aggregation → EMA profile update
+- **EncounterTuner**: Profile-aware combat tension threshold, enemy HP/armor scaling, loot quality
+- **Profile persistence**: `player_profiles` table in SQLite, load/save with upsert
+- **Adaptive campaign generation**: Beat weights from profile injected into campaign planner prompt
+- **Adaptive narration**: Temperature/max_tokens adjusted by `narrative_depth_pref`
+- **Convergence**: 5-10 sessions with EMA alpha=0.3; cold start = neutral defaults
+- **New files**: `models/profile.py`, `engines/engagement_tracker.py`, `engines/encounter_tuner.py`
+
+### 🗺️ Phase 5: Multi-page Router + Campaign Persistence
+- **React Router restructure**: 8 routes with auth context
+  - `/` → Login, `/dashboard`, `/new`, `/campaign/:id`, `/campaign/:id/history`, `/campaigns`, `/profile`, `/about`
+- **Campaign persistence via route**: `/campaign/:id` + `/session/{id}/hydrate` endpoint
+  - Refreshing a campaign page restores full state from backend
+  - After session creation, auto-navigates to `/campaign/:id`
+  - Invalid ID → error page with "New Campaign" button
+- **New pages**: About, Profile, CampaignHistory, CampaignDetail (all dark fantasy themed)
+- **Navbar**: Persistent top nav with auth-aware links (Dashboard, Campaigns, Profile, About)
+- **Auth context**: Minimal React Context for token + username (no Redux)
+
+### 📁 Files Changed
+
+**New files:**
+- `backend/models/profile.py` — PlayerProfile, TurnSignal, SessionMetrics, EMA, beat weights, narration params
+- `backend/engines/engagement_tracker.py` — Signal collection, session aggregation, profile finalize
+- `backend/engines/encounter_tuner.py` — Profile-aware encounter difficulty
+- `frontend/src/components/Navbar.jsx` — Persistent navigation bar
+- `frontend/src/pages/AboutPage.jsx` — Game description page
+- `frontend/src/pages/ProfilePage.jsx` — Player profile with engagement dimensions
+- `frontend/src/pages/CampaignHistoryPage.jsx` — Campaign list page
+- `frontend/src/pages/CampaignDetailPage.jsx` — Turn-by-turn campaign history
+
+**Modified files:**
+- `backend/main.py` — Tracker wiring (start/record/finalize), /hydrate endpoint, encounter tuner
+- `backend/database.py` — player_profiles table + load/save methods
+- `backend/engines/campaign_planner.py` — beat_weights param for adaptive generation
+- `backend/engines/narrator.py` — narration_params param for adaptive narration
+- `frontend/src/AppRouter.jsx` — Full route tree + auth context
+- `frontend/src/App.jsx` — campaignId prop, hydration, post-creation navigation
+- `frontend/src/hooks/useGame.js` — restoreSession() for backend hydration
+- `frontend/src/api.js` — hydrateSession() endpoint
+- `frontend/src/pages/GamePage.jsx` — Reads :id param from URL
+- `frontend/src/pages/DashboardPage.jsx` — Auth context, campaign links
+- `frontend/src/pages/LoginPage.jsx` — Auth context
+- `frontend/src/index.css` — Navbar styles
+
+---
+*Status: All changes verified, build passes, pushed to GitHub.*

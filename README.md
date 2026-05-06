@@ -51,6 +51,8 @@ backend/
 │   ├── narrator.py            # Story narration (70B) + combat narration
 │   ├── combat_engine.py       # Turn-based combat resolution
 │   ├── npc_engine.py          # Dynamic NPC generation + dialogue
+│   ├── engagement_tracker.py  # Per-turn signal + EMA profile update
+│   ├── encounter_tuner.py     # Profile-aware encounter difficulty
 │   ├── probability.py         # Weighted scoring + sigmoid normalization
 │   ├── dice.py                # d20 resolution, 5 outcome tiers
 │   └── state_manager.py       # Player/session state tracking
@@ -60,6 +62,7 @@ backend/
 │   ├── game_state.py          # Player, session, turn models
 │   ├── action.py              # ActionIntent model
 │   ├── outcome.py             # Outcome types
+│   ├── profile.py             # PlayerProfile + TurnSignal + SessionMetrics
 │   └── user.py                # User + TesterRequest models
 ├── data/
 │   ├── campaign_templates.py  # Small/Medium/Large campaign skeletons
@@ -82,13 +85,17 @@ frontend/
 ├── vite.config.js             # Build config (outputs to backend/static)
 ├── src/
 │   ├── main.jsx               # React root
-│   ├── AppRouter.jsx           # React Router (/, /login, /dashboard, /game)
-│   ├── App.jsx                # Layout + theme manager
+│   ├── AppRouter.jsx           # React Router + auth context (8 routes)
+│   ├── App.jsx                # Layout + theme manager + campaign hydration
 │   ├── api.js                 # Backend API wrapper + auth headers
 │   ├── pages/
 │   │   ├── LoginPage.jsx       # Dark fantasy login
 │   │   ├── DashboardPage.jsx   # User stats + campaign history
-│   │   └── GamePage.jsx        # Game wrapper with auth check
+│   │   ├── GamePage.jsx        # Campaign route (/:id hydration or new session)
+│   │   ├── AboutPage.jsx       # Game description
+│   │   ├── ProfilePage.jsx     # Player engagement profile
+│   │   ├── CampaignHistoryPage.jsx  # Campaign list
+│   │   └── CampaignDetailPage.jsx   # Turn-by-turn history
 │   ├── hooks/
 │   │   └── useGame.js          # Core game state hook
 │   ├── components/
@@ -99,6 +106,7 @@ frontend/
 │   │   ├── NarrativeCard.jsx   # Modal narration + typewriter + chunking
 │   │   ├── CombatOverlay.jsx   # Full combat engine + cinematics
 │   │   ├── LoadingOverlay.jsx  # Fullscreen loading spinner
+│   │   ├── Navbar.jsx          # Persistent top navigation
 │   │   ├── SettingsPanel.jsx   # TTS/animation/speed controls
 │   │   └── CampaignEndOverlay.jsx
 │   └── utils/
@@ -129,7 +137,7 @@ frontend/
 
 ## Project Status
 
-**v0.7.2 — Active Development**
+**v0.8.0 — Active Development**
 
 | Phase | Focus | Status |
 |-------|-------|--------|
@@ -142,7 +150,8 @@ frontend/
 | 3.8 | Auth + User Management | ✅ Complete |
 | 3.9 | Combat Enforcement + UI Polish | ✅ Complete |
 | 3.10 | System Coherence (background, validation, context) | ✅ Complete |
-| 4 | RL Engagement Tracker (personalization) | 📋 Planned |
+| 4 | RL Engagement Tracker (personalization) | ✅ Complete |
+| 5 | Multi-page Router + Campaign Persistence | ✅ Complete |
 
 ---
 
@@ -212,6 +221,7 @@ Open [http://localhost:8000](http://localhost:8000) in your browser.
 | `POST` | `/auth/tester-request` | Request tester access |
 | `GET` | `/user/me` | Get current user |
 | `GET` | `/user/dashboard` | User dashboard data |
+| `GET` | `/session/{id}/hydrate` | Full state for frontend hydration |
 | `GET` | `/health` | Server status |
 
 ### Example: Create Session
@@ -326,7 +336,10 @@ Every action goes through:
 - [x] Input validation pipeline (redo_turn, kill switch)
 - [x] Context memory for deviation evaluation (turn history)
 - [x] API reliability (timeouts, retries, max_tokens reduction)
-- [ ] RL-based player personalization
+- [x] RL-based player personalization (contextual bandit + EMA)
+- [x] Multi-page React Router with campaign persistence
+- [x] Player profile page with engagement dimensions
+- [x] Campaign history with turn-by-turn detail
 
 ---
 
