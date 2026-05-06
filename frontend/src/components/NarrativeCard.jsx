@@ -80,6 +80,12 @@ export default function NarrativeCard({ narration, onChoice, onDismiss, animatio
       }
       tts.speak(chunks[nextIdx]);
     } else {
+      // Last chunk — if still typing, complete it immediately
+      if (isTyping) {
+        cancel();
+        setDisplayedText(chunks[chunkIndex] || '');
+        setIsTyping(false);
+      }
       if (narration?.choices?.length > 0) {
         setShowActions(true);
       } else {

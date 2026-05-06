@@ -44,7 +44,7 @@ export default function GameApp() {
       {!connected ? (
         <>
           <ConnectOverlay onStart={handleStart} onCancel={connected ? undefined : () => window.history.back()} />
-          <LoadingOverlay show={game.loading} />
+          <LoadingOverlay show={game.loading} hasRoll={false} />
         </>
       ) : (
         <>
@@ -85,7 +85,7 @@ export default function GameApp() {
             victory={game.victory}
             gameOver={game.gameOver}
           />
-          <LoadingOverlay show={game.loading} />
+          <LoadingOverlay show={game.loading} hasRoll={false} />
         </>
       )}
       {/* Settings always visible */}
