@@ -547,6 +547,153 @@ async def submit_action(session_id: str, req: ActionRequest):
     turns_since_combat = session.world_state.get("turns_since_combat", 0)
     turns_in_beat = session.world_state.get("turns_in_beat", 0)
 
+    # ── VALIDATION FIRST (before any API calls) ──
+    VALIDATION_ENABLED = True  # Kill switch: set False to bypass all validation
+    warning_count = session.world_state.get("warning_count", 0)
+    deviation_score = session.world_state.get("deviation_score", 0.0)
+    warning_message_out = None
+    game_over_reason = None
+
+    # Get context for alignment evaluation
+    npc_names = []
+    npcs_data = session.world_state.get("npcs", {})
+    if npcs_data:
+        for npc_dict in npcs_data.values():
+            name = npc_dict.get("personality", {}).get("name", "")
+            if name:
+                npc_names.append(name)
+
+    recent_narration = session.world_state.get("situation", "")[-300:]
+    location = session.world_state.get("location", "")
+
+    logger.info(f"INPUT: {req.action!r}")
+    # Step 1: Safety filter (obscene / abusive content)
+    _UNSAFE_PATTERNS = [
+        "fuck", "shit", "bitch", "asshole", "dick", "cunt", "nigger", "nigga",
+        "rape", "pedophile", "kill yourself", "kys", "suicide",
+    ]
+    action_lower_check = req.action.lower()
+    if any(word in action_lower_check for word in _UNSAFE_PATTERNS):
+        logger.info(f"Validation: unsafe content blocked: {req.action[:50]}")
+        warning_count += 1
+        session.world_state["warning_count"] = warning_count
+        return ActionResponse(
+            turn_number=session.turn_number,
+            intent=ActionIntent(action=req.action, action_type="invalid", description="Blocked", relevant_stat="wisdom", risk="low", requires_roll=False),
+            requires_roll=False,
+            outcome="irrelevant_action",
+            narration="That language has no place in this world. Choose your words more carefully.",
+            state_changes=StateChanges(),
+            player_hp=session.player.hp,
+            player_mana=session.player.mana,
+            player_level=session.player.level,
+            player_xp=session.player.xp,
+            player_xp_to_next=session.player.xp_to_next,
+            max_hp=session.player.max_hp,
+            max_mana=session.player.max_mana,
+            inventory=[i.model_dump() for i in session.player.inventory],
+            choices=[],
+            warning_count=warning_count,
+            warning_message="Inappropriate language detected.",
+            redo_turn=True,
+            ui_context={"environment": "default", "tone": "tense"},
+        )
+
+    # Step 2: Relevance / deviation check
+    if not VALIDATION_ENABLED:
+        classification = "relevant"
+        alignment = 0.5
+    else:
+        try:
+            classification, alignment = evaluate_alignment(
+                action=req.action,
+                current_beat=current_beat_title,
+                recent_narration=recent_narration,
+                campaign_objective=campaign_objective,
+                location=location,
+                npc_names=npc_names,
+                turn_history=session.turn_history[-3:] if session.turn_history else None,
+            )
+        except Exception as e:
+            logger.warning(f"Deviation eval failed, allowing action: {e}")
+            classification = "relevant"
+            alignment = 0.5
+
+    logger.info(f"Deviation: {classification} (alignment={alignment:.2f}, warnings={warning_count})")
+
+    if classification == "major":
+        warning_count += 1
+        session.world_state["warning_count"] = warning_count
+        deviation_score = max(-1.0, deviation_score - 0.3)
+        session.world_state["deviation_score"] = deviation_score
+        warning_message_out = get_warning_message(warning_count)
+
+        if warning_count >= 3:
+            # Game over — too many deviations
+            game_over_reason = "lost_focus"
+            session.world_state["campaign_ended"] = True
+            await _record_campaign_end(db, session, "lost_focus")
+            session.turn_number += 1
+            final_msg = get_warning_message(3) or "You have strayed too far from your path. The journey collapses."
+            return ActionResponse(
+                turn_number=session.turn_number,
+                intent=ActionIntent(action=req.action, action_type="invalid", description="Lost focus", relevant_stat="wisdom", risk="low", requires_roll=False),
+                requires_roll=False,
+                outcome="critical_failure",
+                narration=final_msg,
+                state_changes=StateChanges(),
+                player_hp=session.player.hp,
+                player_mana=session.player.mana,
+                player_level=session.player.level,
+                player_xp=session.player.xp,
+                player_xp_to_next=session.player.xp_to_next,
+                max_hp=session.player.max_hp,
+                max_mana=session.player.max_mana,
+                inventory=[i.model_dump() for i in session.player.inventory],
+                choices=[],
+                game_over=False,
+                victory=False,
+                campaign_ended=False,
+                campaign_objective=campaign_objective,
+                warning_count=warning_count,
+                warning_message=final_msg,
+                game_over_reason=game_over_reason,
+                pending_outcome={"type": "game_over", "reason": "lost_focus"},
+                ui_context={"environment": "default", "tone": "tense"},
+            )
+        # Warning < 3 — don't call narrator, let player retry
+        session.world_state["warning_count"] = warning_count
+        return ActionResponse(
+            turn_number=session.turn_number,
+            intent=ActionIntent(action=req.action, action_type="invalid", description="Irrelevant", relevant_stat="wisdom", risk="low", requires_roll=False),
+            requires_roll=False,
+            outcome="irrelevant_action",
+            narration=warning_message_out or "That action doesn't seem relevant to your current situation.",
+            state_changes=StateChanges(),
+            player_hp=session.player.hp,
+            player_mana=session.player.mana,
+            player_level=session.player.level,
+            player_xp=session.player.xp,
+            player_xp_to_next=session.player.xp_to_next,
+            max_hp=session.player.max_hp,
+            max_mana=session.player.max_mana,
+            inventory=[i.model_dump() for i in session.player.inventory],
+            choices=[],
+            warning_count=warning_count,
+            warning_message=warning_message_out,
+            redo_turn=True,
+            ui_context={"environment": "default", "tone": "tense"},
+        )
+    elif classification == "slight":
+        deviation_score = max(-1.0, deviation_score - 0.1)
+        session.world_state["deviation_score"] = deviation_score
+    else:
+        # Relevant or creative_valid — reduce deviation score (forgive past)
+        deviation_score = min(0.0, deviation_score + 0.05)
+        session.world_state["deviation_score"] = deviation_score
+
+    # ── VALIDATION PASSED — proceed to intent parsing ──
+
     # 1. Intent Parsing
     try:
         intent = await parser.parse(req.action, world_context, stats_summary)
@@ -596,118 +743,6 @@ async def submit_action(session_id: str, req: ActionRequest):
                 npc_dialogue = dialogue_result
             except Exception as e:
                 logger.warning(f"NPC dialogue failed: {e}")
-
-    # ── Deviation Check ──
-    VALIDATION_ENABLED = True  # Kill switch: set False to bypass all validation
-    warning_count = session.world_state.get("warning_count", 0)
-    deviation_score = session.world_state.get("deviation_score", 0.0)
-    warning_message_out = None
-    game_over_reason = None
-
-    # Get context for alignment evaluation
-    npc_names = []
-    npcs_data = session.world_state.get("npcs", {})
-    if npcs_data:
-        for npc_dict in npcs_data.values():
-            name = npc_dict.get("personality", {}).get("name", "")
-            if name:
-                npc_names.append(name)
-
-    recent_narration = session.world_state.get("situation", "")[-300:]
-    location = session.world_state.get("location", "")
-
-    if not VALIDATION_ENABLED:
-        classification = "relevant"
-        alignment = 0.5
-    else:
-        try:
-            classification, alignment = evaluate_alignment(
-                action=req.action,
-                current_beat=current_beat_title,
-                recent_narration=recent_narration,
-                campaign_objective=campaign_objective,
-                location=location,
-                npc_names=npc_names,
-                turn_history=session.turn_history[-3:] if session.turn_history else None,
-            )
-        except Exception as e:
-            logger.warning(f"Deviation eval failed, allowing action: {e}")
-            classification = "relevant"
-            alignment = 0.5
-
-    logger.info(f"Deviation: {classification} (alignment={alignment:.2f}, warnings={warning_count})")
-
-    if classification == "major":
-        warning_count += 1
-        session.world_state["warning_count"] = warning_count
-        deviation_score = max(-1.0, deviation_score - 0.3)
-        session.world_state["deviation_score"] = deviation_score
-        warning_message_out = get_warning_message(warning_count)
-
-        if warning_count >= 3:
-            # Game over — too many deviations
-            game_over_reason = "lost_focus"
-            session.world_state["campaign_ended"] = True
-            await _record_campaign_end(db, session, "lost_focus")
-            session.turn_number += 1
-            final_msg = get_warning_message(3) or "You have strayed too far from your path. The journey collapses."
-            return ActionResponse(
-                turn_number=session.turn_number,
-                intent=intent,
-                requires_roll=False,
-                outcome="critical_failure",
-                narration=final_msg,
-                state_changes=StateChanges(),
-                player_hp=session.player.hp,
-                player_mana=session.player.mana,
-                player_level=session.player.level,
-                player_xp=session.player.xp,
-                player_xp_to_next=session.player.xp_to_next,
-                max_hp=session.player.max_hp,
-                max_mana=session.player.max_mana,
-                inventory=[i.model_dump() for i in session.player.inventory],
-                choices=[],
-                game_over=False,  # Deferred — narration first
-                victory=False,
-                campaign_ended=False,
-                campaign_objective=campaign_objective,
-                warning_count=warning_count,
-                warning_message=final_msg,
-                game_over_reason=game_over_reason,
-                pending_outcome={"type": "game_over", "reason": "lost_focus"},
-                ui_context={"environment": "default", "tone": "tense"},
-            )
-        # Warning < 3 — don't call narrator, let player retry
-        session.world_state["warning_count"] = warning_count
-        return ActionResponse(
-            turn_number=session.turn_number,
-            intent=intent,
-            requires_roll=False,
-            outcome="irrelevant_action",
-            narration=warning_message_out or "That action doesn't seem relevant to your current situation.",
-            state_changes=StateChanges(),
-            player_hp=session.player.hp,
-            player_mana=session.player.mana,
-            player_level=session.player.level,
-            player_xp=session.player.xp,
-            player_xp_to_next=session.player.xp_to_next,
-            max_hp=session.player.max_hp,
-            max_mana=session.player.max_mana,
-            inventory=[i.model_dump() for i in session.player.inventory],
-            choices=[],
-            warning_count=warning_count,
-            warning_message=warning_message_out,
-            redo_turn=True,
-            ui_context={"environment": "default", "tone": "tense"},
-        )
-    elif classification == "slight":
-        deviation_score = max(-1.0, deviation_score - 0.1)
-        session.world_state["deviation_score"] = deviation_score
-        # No warning increment for slight deviation — just track the score
-    else:
-        # Relevant or creative_valid — reduce deviation score (forgive past)
-        deviation_score = min(0.0, deviation_score + 0.1)
-        session.world_state["deviation_score"] = deviation_score
 
     # 2. Check if roll is needed
     if not intent.requires_roll:
