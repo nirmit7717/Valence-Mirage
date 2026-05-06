@@ -1,31 +1,32 @@
 import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import * as api from '../api';
+import { useAuth } from '../AppRouter';
 import './auth.css';
 
 export default function DashboardPage() {
   const navigate = useNavigate();
+  const { username, logout } = useAuth();
   const [user, setUser] = useState(null);
   const [campaigns, setCampaigns] = useState([]);
   const [stats, setStats] = useState(null);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    const token = localStorage.getItem('token');
-    if (!token) { navigate('/login'); return; }
+    if (!username) { navigate('/login'); return; }
     api.getUserDashboard().then(data => {
       setUser(data.user);
       setCampaigns(data.campaigns);
       setStats(data.stats);
       setLoading(false);
     }).catch(() => {
-      localStorage.removeItem('token');
+      logout();
       navigate('/login');
     });
-  }, [navigate]);
+  }, [username]);
 
   const handleLogout = () => {
-    localStorage.removeItem('token');
+    logout();
     navigate('/login');
   };
 
@@ -39,7 +40,7 @@ export default function DashboardPage() {
       <header className="dashboard-header">
         <h1>Valence Mirage</h1>
         <div className="header-right">
-          <span>Welcome, {user?.username}</span>
+          <span>Welcome, {user?.username || username}</span>
           <button className="auth-btn secondary" onClick={handleLogout}>Logout</button>
         </div>
       </header>
@@ -66,7 +67,7 @@ export default function DashboardPage() {
       <div className="campaigns-section">
         <div className="section-header">
           <h2>Past Campaigns</h2>
-          <button className="auth-btn" onClick={() => navigate('/game')}>New Game</button>
+          <button className="auth-btn" onClick={() => navigate('/new')}>New Game</button>
         </div>
         {campaigns.length === 0 ? (
           <p className="no-campaigns">No campaigns yet. Start your first adventure!</p>
@@ -79,7 +80,7 @@ export default function DashboardPage() {
             </thead>
             <tbody>
               {campaigns.map(c => (
-                <tr key={c.id}>
+                <tr key={c.id} onClick={() => navigate(`/campaign/${c.session_id}/history`)} style={{ cursor: 'pointer' }}>
                   <td>{c.campaign_title || '—'}</td>
                   <td className={c.result === 'victory' ? 'result-win' : 'result-loss'}>{c.result}</td>
                   <td>{c.turns}</td>

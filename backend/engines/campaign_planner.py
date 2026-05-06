@@ -54,7 +54,7 @@ class CampaignPlanner:
         )
         self.prompt = PROMPT_PATH.read_text()
 
-    async def generate_blueprint(self, player_name: str = "Adventurer", keywords: str = "", template=None) -> CampaignBlueprint:
+    async def generate_blueprint(self, player_name: str = "Adventurer", keywords: str = "", template=None, beat_weights: dict = None) -> CampaignBlueprint:
         if keywords.strip():
             user_msg = (
                 f"Player character: {player_name}\n"
@@ -74,6 +74,12 @@ class CampaignPlanner:
                 for beat in act.beats:
                     template_desc += f"  Beat {beat.beat_id}: type={beat.beat_type}, enforcement={beat.enforcement} — {beat.description}\n"
             user_msg += template_desc
+            # Adaptive beat weighting from player profile
+            if beat_weights:
+                weight_desc = "\nPLAYER PREFERENCES (weight beat content accordingly):\n"
+                for btype, weight in beat_weights.items():
+                    weight_desc += f"  {btype}: {weight:.2f}\n"
+                user_msg += weight_desc
             user_msg += "\nGenerate a campaign that fills this structure with creative content. Keep the beat types as specified.\n"
         else:
             user_msg += "Generate a complete campaign blueprint for a single-session dark fantasy adventure.\n"

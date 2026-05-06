@@ -1,4 +1,5 @@
 import { useState, useCallback, useEffect } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { useGame } from './hooks/useGame';
 import { THEMES, injectAmbienceCSS } from './utils/theme';
 import ConnectOverlay from './components/ConnectOverlay';
@@ -12,13 +13,28 @@ import SettingsPanel from './components/SettingsPanel';
 
 injectAmbienceCSS();
 
-export default function GameApp() {
+export default function GameApp({ campaignId }) {
   const game = useGame();
+  const navigate = useNavigate();
   const [connected, setConnected] = useState(false);
   const [animationsEnabled, setAnimationsEnabled] = useState(true);
   const [textSpeed, setTextSpeed] = useState(20);
+  const [restoreError, setRestoreError] = useState(null);
 
   const themeData = THEMES[game.theme] || THEMES.default;
+
+  // Hydrate from campaign ID on mount
+  useEffect(() => {
+    if (campaignId && !game.sessionId) {
+      game.restoreSession(campaignId).then(data => {
+        if (data) {
+          setConnected(true);
+        } else {
+          setRestoreError('Campaign not found or expired.');
+        }
+      });
+    }
+  }, [campaignId]);
 
   useEffect(() => {
     document.body.style.background = themeData.gradient;
@@ -30,20 +46,38 @@ export default function GameApp() {
   }, [themeData]);
 
   const handleStart = useCallback(async (params) => {
-    await game.startSession(params);
+    const data = await game.startSession(params);
     setConnected(true);
-  }, [game]);
+    // Navigate to campaign route so refresh works
+    if (data?.session_id) {
+      navigate(`/campaign/${data.session_id}`, { replace: true });
+    }
+  }, [game, navigate]);
 
   const handleChoice = useCallback((choice) => {
     if (game.gameOver) return;
     game.submitAction(choice);
   }, [game]);
 
+  if (restoreError) {
+    return (
+      <div className="game-root">
+        <div className="stage-waiting">
+          <div className="stage-waiting-text">
+            <strong>⚠ {restoreError}</strong>
+            <br /><br />
+            <button className="auth-btn" onClick={() => navigate('/new')}>Start New Campaign</button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="game-root">
       {!connected ? (
         <>
-          <ConnectOverlay onStart={handleStart} onCancel={connected ? undefined : () => window.history.back()} />
+          <ConnectOverlay onStart={handleStart} onCancel={() => navigate('/dashboard')} />
           <LoadingOverlay show={game.loading} hasRoll={false} />
         </>
       ) : (
@@ -65,7 +99,6 @@ export default function GameApp() {
             )}
           </div>
 
-          {/* Dice roll animation — shows BEFORE narration */}
           <DiceRoll
             diceResult={game.diceResult}
             onComplete={game.onDiceAnimationComplete}
@@ -88,7 +121,6 @@ export default function GameApp() {
           <LoadingOverlay show={game.loading} hasRoll={false} />
         </>
       )}
-      {/* Settings always visible */}
       <SettingsPanel
         animationsEnabled={animationsEnabled}
         setAnimationsEnabled={setAnimationsEnabled}

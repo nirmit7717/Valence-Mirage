@@ -14,6 +14,8 @@ from engines.campaign_planner import CampaignPlanner, CampaignBlueprint
 from engines.npc_engine import NPCEngine, NPCState, NPCPersonality
 from engines.combat_engine import CombatEngine
 from engines.deviation import evaluate_alignment, get_warning_message
+from engines.engagement_tracker import EngagementTracker
+from models.profile import PlayerProfile, get_beat_weights, get_narration_params
 from models.action import ActionIntent
 from models.game_state import GameSession, Turn, Item
 from models.outcome import Outcome, StateChanges, ProbabilityScore, ScoreBreakdown
@@ -40,6 +42,7 @@ async def lifespan(app: FastAPI):
     app.state.campaign_planner = CampaignPlanner()
     app.state.npc_engine = NPCEngine()
     app.state.combat_engine = CombatEngine()
+    app.state.engagement_tracker = EngagementTracker()
 
     # Initialize vector store + RAG
     app.state.vector_store = VectorStore()
@@ -301,7 +304,9 @@ async def create_session(req: NewSessionRequest = NewSessionRequest(), authoriza
     session.world_state["campaign_size"] = req.campaign_size.lower()
     session.world_state["campaign_template"] = template.model_dump()
 
-    blueprint = await planner.generate_blueprint(req.player_name, keywords=req.keywords, template=template)
+
+    _bw = get_beat_weights(player_profile)
+    blueprint = await planner.generate_blueprint(req.player_name, keywords=req.keywords, template=template, beat_weights=_bw)
     session.world_state["campaign"] = blueprint.model_dump()
     session.world_state["location"] = blueprint.setting
     session.world_state["situation"] = blueprint.premise
@@ -329,6 +334,17 @@ async def create_session(req: NewSessionRequest = NewSessionRequest(), authoriza
     session.world_state["turns_since_combat"] = 0
     session.world_state["combat_tension"] = 0
     session.world_state["turns_in_beat"] = 0
+
+    # Start engagement tracking
+    tracker: EngagementTracker = app.state.engagement_tracker
+    tracker.start_session(session.session_id)
+
+    # Load player profile (if authenticated) for adaptive generation
+    user_id = session.world_state.get("user_id")
+    player_profile = None
+    if user_id:
+        player_profile = await db.load_profile(user_id)
+    session.world_state["player_profile"] = player_profile.model_dump() if player_profile else None
 
     # Generate opening narration
     narrator: Narrator = app.state.narrator
@@ -387,6 +403,60 @@ async def get_session(session_id: str):
         else:
             raise HTTPException(status_code=404, detail="Session not found")
     return session
+
+
+@app.get("/session/{session_id}/hydrate")
+async def hydrate_session(session_id: str):
+    """Return full session state for frontend hydration after page refresh."""
+    sm: StateManager = app.state.state_manager
+    session = sm.get_session(session_id)
+    if not session:
+        db: Database = app.state.db
+        session = await db.load_session(session_id)
+        if session:
+            sm._sessions[session_id] = session
+        else:
+            raise HTTPException(status_code=404, detail="Session not found")
+
+    campaign = session.world_state.get("campaign", {})
+    combat_ws = session.world_state.get("combat")
+    campaign_ended = session.world_state.get("campaign_ended", False)
+
+    # Rebuild sidebar-relevant data
+    from models.character import CLASS_ABILITIES, CLASS_DESCRIPTIONS
+    cls_name = session.player.character_class
+    abilities = []
+    try:
+        from models.character import CharacterClass
+        cls_enum = CharacterClass(cls_name)
+        abilities = [a.model_dump() for a in CLASS_ABILITIES.get(cls_enum, [])]
+    except Exception:
+        pass
+
+    return {
+        "session_id": session.session_id,
+        "turn_number": session.turn_number,
+        "player": session.player.model_dump(),
+        "character_class": cls_name,
+        "class_description": CLASS_DESCRIPTIONS.get(cls_name, "") if cls_name else "",
+        "abilities": abilities,
+        "campaign": {
+            "title": campaign.get("title", ""),
+            "premise": campaign.get("premise", ""),
+            "setting": campaign.get("setting", ""),
+            "acts": campaign.get("acts", []),
+            "possible_endings": campaign.get("possible_endings", []),
+        },
+        "campaign_size": session.world_state.get("campaign_size", "medium"),
+        "location": session.world_state.get("location", ""),
+        "situation": session.world_state.get("situation", ""),
+        "campaign_objective": session.world_state.get("campaign_objective", ""),
+        "combat": combat_ws if combat_ws and not combat_ws.get("resolved", False) else None,
+        "campaign_ended": campaign_ended,
+        "warning_count": session.world_state.get("warning_count", 0),
+        "npcs": session.world_state.get("npcs", {}),
+        "inventory": [{"name": i.name, "type": i.item_type, "hp_restore": getattr(i, "hp_restore", 0), "mana_restore": getattr(i, "mana_restore", 0)} for i in session.player.inventory],
+    }
 
 
 @app.delete("/session/{session_id}")
@@ -694,6 +764,10 @@ async def submit_action(session_id: str, req: ActionRequest):
 
     # ── VALIDATION PASSED — proceed to intent parsing ──
 
+    # Load narration params from player profile (if available)
+    _profile_data = session.world_state.get("player_profile")
+    _narration_params = get_narration_params(PlayerProfile(**_profile_data) if _profile_data else None)
+
     # 1. Intent Parsing
     try:
         intent = await parser.parse(req.action, world_context, stats_summary)
@@ -768,7 +842,10 @@ async def submit_action(session_id: str, req: ActionRequest):
     # Accumulates tension each turn based on action risk and context.
     # Triggers combat when tension reaches threshold, ensuring reliable but contextual encounters.
     combat_tension = session.world_state.get("combat_tension", 0)
-    combat_tension_threshold = 6  # Trigger combat at this level
+    # Profile-aware encounter threshold
+    from engines.encounter_tuner import get_encounter_params
+    _encounter_params = get_encounter_params(PlayerProfile(**_profile_data) if _profile_data else None)
+    combat_tension_threshold = _encounter_params["tension_threshold"]
 
     if session.world_state.get("combat"):
         # Already in combat — don't accumulate
@@ -828,6 +905,7 @@ async def submit_action(session_id: str, req: ActionRequest):
                 npc_dialogue=npc_dialogue,
                 turn_history=session.turn_history,
                 combat_context=_combat_ctx,
+                narration_params=_narration_params,
             )
         except Exception as e:
             logger.error(f"No-roll narration failed: {e}", exc_info=True)
@@ -1056,6 +1134,7 @@ async def submit_action(session_id: str, req: ActionRequest):
             npc_dialogue=npc_dialogue,
             turn_history=session.turn_history,
             combat_context=_combat_ctx,
+            narration_params=_narration_params,
         )
     except Exception as e:
         narration = f"Your {intent.action_type} results in {outcome_result}."
@@ -1362,6 +1441,21 @@ async def submit_action(session_id: str, req: ActionRequest):
     )
     session.turn_history.append(turn)
 
+    # 12b. Engagement tracking
+    tracker: EngagementTracker = app.state.engagement_tracker
+    mana_delta = max(0, state_changes.mana_change) if state_changes and state_changes.mana_change else 0
+    tracker.record_turn(
+        session_id=session_id,
+        turn_number=session.turn_number,
+        action_type=intent.action_type,
+        required_roll=intent.requires_roll,
+        dice_result=str(outcome_result) if outcome_result else "",
+        combat_action=combat_started,
+        npc_interaction=npc_dialogue is not None,
+        mana_spent=abs(mana_delta),
+        items_used=0,  # Item tracking is implicit via state changes
+    )
+
     # 13. Persist
     await db.save_turn(session_id, turn)
     await db.save_session(session)
@@ -1552,6 +1646,7 @@ async def resolve_combat(session_id: str, req: CombatResolveRequest):
                 player=session.player,
                 world_state=session.world_state,
                 turn_history=session.turn_history,
+                narration_params=_narration_params,
             )
         except Exception:
             narration = f"The {req.enemy_name} falls. The battle is won. What lies ahead?"
@@ -1590,6 +1685,7 @@ async def resolve_combat(session_id: str, req: CombatResolveRequest):
                 player=session.player,
                 world_state=session.world_state,
                 turn_history=session.turn_history,
+                narration_params=_narration_params,
             )
         except Exception:
             narration = f"The {req.enemy_name} overwhelms you. Darkness takes hold..."
@@ -1769,6 +1865,18 @@ async def _record_campaign_end(db: Database, session, result: str):
         except Exception as e:
             logger.error(f"\u274c Failed to save campaign history: {e}", exc_info=True)
             session.world_state["campaign_saved"] = False  # Allow retry
+
+    # Finalize engagement tracking — aggregate session and update profile
+    tracker = getattr(app.state, 'engagement_tracker', None)
+    if tracker and user_id:
+        try:
+            profile = await db.load_profile(user_id)
+            profile = tracker.finalize_session(session.session_id, profile, user_id)
+            if profile:
+                await db.save_profile(profile)
+                logger.info(f"Profile updated for {user_id} after campaign end")
+        except Exception as e:
+            logger.error(f"Engagement tracking failed: {e}", exc_info=True)
     else:
         logger.warning(f"Campaign history skipped \u2014 no user_id for session {session.session_id}")
 

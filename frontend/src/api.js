@@ -98,6 +98,12 @@ export async function listSessions() {
   return res.json();
 }
 
+export async function hydrateSession(sessionId) {
+  const res = await fetch(`${API}/session/${sessionId}/hydrate`, { headers: getAuthHeaders() });
+  if (!res.ok) throw new Error(`Session not found: ${res.status}`);
+  return res.json();
+}
+
 export async function deleteSession(sessionId) {
   const res = await fetch(`${API}/session/${sessionId}`, { method: 'DELETE', headers: getAuthHeaders() });
   return res.json();

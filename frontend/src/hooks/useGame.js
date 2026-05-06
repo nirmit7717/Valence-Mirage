@@ -91,6 +91,54 @@ export function useGame() {
     }
   }, [addMessage]);
 
+  // Restore session from backend (page refresh / direct URL)
+  const restoreSession = useCallback(async (sessionIdFromRoute) => {
+    setLoading(true);
+    try {
+      const data = await api.hydrateSession(sessionIdFromRoute);
+      setSessionId(data.session_id);
+      setSessionInfo({ turn: data.turn_number, title: data.campaign?.title });
+
+      const detectedTheme = getThemeFromCampaign(data.campaign);
+      setTheme(detectedTheme);
+
+      if (data.campaign_ended) {
+        setCampaignEnded(true);
+      }
+
+      // Restore sidebar
+      const classEmoji = { warrior: '⚔️', rogue: '🗡️', wizard: '🔮', cleric: '✨', bard: '🎵' };
+      setSidebar({
+        name: data.player?.name || 'Adventurer',
+        characterClass: data.character_class,
+        level: data.player?.level || 1,
+        turn: data.turn_number || 1,
+        xp: data.player?.xp || 0,
+        xpToNext: data.player?.xp_to_next || 100,
+        hp: data.player?.hp || 50,
+        maxHp: data.player?.max_hp || 50,
+        mana: data.player?.mana || 50,
+        maxMana: data.player?.max_mana || 50,
+        stats: data.player?.stats,
+        beat: data.campaign?.acts?.[0]?.beats?.[0]?.title || '—',
+        inventory: data.inventory || [],
+        npcs: Object.values(data.npcs || {}),
+        effects: [],
+        lastRoll: null,
+        objective: data.campaign_objective || '',
+      });
+
+      addMessage('system', `<strong>📜 ${data.campaign?.title || 'Campaign'}</strong> — Session restored.`);
+
+      return data;
+    } catch (e) {
+      addMessage('system', '⚠ Failed to restore session: ' + e.message);
+      return null;
+    } finally {
+      setLoading(false);
+    }
+  }, [addMessage]);
+
   // Called by DiceRoll when animation finishes — processes the queued response
   const onDiceAnimationComplete = useCallback(() => {
     setDiceResult(null);
@@ -396,7 +444,7 @@ export function useGame() {
     sessionId, sessionInfo, messages, sidebar, loading, narration,
     combat, campaignEnded, gameOver, victory, theme, busy,
     diceResult, pendingResponse,
-    startSession, submitAction, resolveCombat,
+    startSession, restoreSession, submitAction, resolveCombat,
     dismissNarration,
     onDiceAnimationComplete,
     setCombat, addMessage,

@@ -53,6 +53,7 @@ class Narrator:
         npc_dialogue: dict | None = None,
         turn_history: list | None = None,
         combat_context: str | None = None,
+        narration_params: dict | None = None,
     ) -> str:
         # Fetch relevant rules for grounding
         relevant_rules = await self.rule_retriever.get_relevant_rules(
@@ -150,8 +151,8 @@ class Narrator:
                     {"role": "system", "content": self.prompt},
                     {"role": "user", "content": user_msg},
                 ],
-                temperature=0.85,
-                max_tokens=500,
+                temperature=narration_params.get("temperature", 0.85) if narration_params else 0.85,
+                max_tokens=narration_params.get("max_tokens", 500) if narration_params else 500,
             )
             narration = response.choices[0].message.content.strip()
             logger.debug(f"Narration: {narration[:100]}...")

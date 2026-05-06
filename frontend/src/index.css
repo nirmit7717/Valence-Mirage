@@ -762,3 +762,47 @@ body {
 .cd-label { display: block; font-size: 12px; font-weight: 600; letter-spacing: 1px; margin-top: 4px; font-family: 'Cinzel', serif; }
 .cd-label.cd-green { color: #4a4; }
 .cd-label.cd-red { color: #a44; }
+
+/* ═══ Navbar ═══ */
+.vm-navbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 1.5rem;
+  height: 48px;
+  background: #0d0d1a;
+  border-bottom: 1px solid #2a2a3e;
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 1000;
+}
+.vm-navbar-brand { display: flex; align-items: center; }
+.vm-navbar-logo {
+  color: #c9a04e;
+  font-family: 'Cinzel', serif;
+  font-size: 1.1rem;
+  font-weight: 700;
+  text-decoration: none;
+}
+.vm-navbar-links { display: flex; align-items: center; gap: 1.25rem; }
+.vm-nav-link {
+  color: #888;
+  text-decoration: none;
+  font-size: 0.9rem;
+  transition: color 0.2s;
+}
+.vm-nav-link:hover, .vm-nav-link.active { color: #c9a04e; }
+.vm-nav-user { color: #666; font-size: 0.85rem; }
+.vm-nav-logout {
+  background: none;
+  border: 1px solid #444;
+  color: #888;
+  padding: 0.25rem 0.75rem;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 0.8rem;
+  transition: all 0.2s;
+}
+.vm-nav-logout:hover { border-color: #c9a04e; color: #c9a04e; }

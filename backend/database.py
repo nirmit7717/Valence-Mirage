@@ -71,6 +71,20 @@ CREATE TABLE IF NOT EXISTS campaign_history (
     created_at TEXT NOT NULL,
     FOREIGN KEY (user_id) REFERENCES users(id)
 );
+
+CREATE TABLE IF NOT EXISTS player_profiles (
+    user_id TEXT PRIMARY KEY,
+    combat_affinity REAL DEFAULT 0.0,
+    exploration_affinity REAL DEFAULT 0.0,
+    social_affinity REAL DEFAULT 0.0,
+    narrative_depth_pref REAL DEFAULT 0.0,
+    risk_tolerance REAL DEFAULT 0.0,
+    pacing_pref REAL DEFAULT 0.0,
+    sessions_played INTEGER DEFAULT 0,
+    last_session_id TEXT,
+    updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (user_id) REFERENCES users(id)
+);
 """
 
 
@@ -325,3 +339,63 @@ class Database:
         if session.turn_history:
             await self.save_turns_batch(session.session_id, session.turn_history)
         logger.info(f"Full session persisted: {session.session_id} ({len(session.turn_history)} turns)")
+
+    # ─── Player Profile ────────────────────────────────────────────────
+
+    async def load_profile(self, user_id: str):
+        """Load player profile. Returns PlayerProfile or None."""
+        from models.profile import PlayerProfile
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            cursor = await db.execute(
+                "SELECT * FROM player_profiles WHERE user_id = ?", (user_id,)
+            )
+            row = await cursor.fetchone()
+            if row is None:
+                return None
+            return PlayerProfile(
+                user_id=row["user_id"],
+                combat_affinity=row["combat_affinity"],
+                exploration_affinity=row["exploration_affinity"],
+                social_affinity=row["social_affinity"],
+                narrative_depth_pref=row["narrative_depth_pref"],
+                risk_tolerance=row["risk_tolerance"],
+                pacing_pref=row["pacing_pref"],
+                sessions_played=row["sessions_played"],
+                last_session_id=row["last_session_id"],
+            )
+
+    async def save_profile(self, profile) -> None:
+        """Save or update player profile (upsert)."""
+        from datetime import datetime
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute("""
+                INSERT INTO player_profiles
+                    (user_id, combat_affinity, exploration_affinity, social_affinity,
+                     narrative_depth_pref, risk_tolerance, pacing_pref,
+                     sessions_played, last_session_id, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(user_id) DO UPDATE SET
+                    combat_affinity = excluded.combat_affinity,
+                    exploration_affinity = excluded.exploration_affinity,
+                    social_affinity = excluded.social_affinity,
+                    narrative_depth_pref = excluded.narrative_depth_pref,
+                    risk_tolerance = excluded.risk_tolerance,
+                    pacing_pref = excluded.pacing_pref,
+                    sessions_played = excluded.sessions_played,
+                    last_session_id = excluded.last_session_id,
+                    updated_at = excluded.updated_at
+            """, (
+                profile.user_id,
+                profile.combat_affinity,
+                profile.exploration_affinity,
+                profile.social_affinity,
+                profile.narrative_depth_pref,
+                profile.risk_tolerance,
+                profile.pacing_pref,
+                profile.sessions_played,
+                profile.last_session_id,
+                datetime.now().isoformat(),
+            ))
+            await db.commit()
+            logger.info(f"Profile saved for {profile.user_id} (sessions: {profile.sessions_played})")

@@ -1,10 +1,12 @@
 import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import * as api from '../api';
+import { useAuth } from '../AppRouter';
 import './auth.css';
 
 export default function LoginPage() {
   const navigate = useNavigate();
+  const { login } = useAuth();
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
@@ -17,7 +19,7 @@ export default function LoginPage() {
     setError('');
     try {
       const data = await api.login(username, password);
-      localStorage.setItem('token', data.access_token);
+      login(data.access_token, username);
       navigate('/dashboard');
     } catch (err) {
       setError(err.message);
