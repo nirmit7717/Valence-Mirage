@@ -35,3 +35,6 @@ backend/static/modules/
 # Node
 frontend/node_modules/
 frontend/dist/
+
+# Planning docs (not for repo)
+Phase4_plan.md
