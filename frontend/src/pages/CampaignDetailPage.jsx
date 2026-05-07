@@ -1,20 +1,17 @@
 import { useState, useEffect } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import * as api from '../api';
-import { useAuth } from '../AppRouter';
+import PageLoader from '../components/PageLoader';
 
 export default function CampaignDetailPage() {
   const { id } = useParams();
   const navigate = useNavigate();
-  const { username } = useAuth();
   const [turns, setTurns] = useState([]);
   const [session, setSession] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
 
   useEffect(() => {
-    if (!username) { navigate('/login'); return; }
-
     Promise.all([
       api.getSession(id).catch(() => null),
       api.getSessionHistory(id).catch(() => []),
@@ -27,53 +24,59 @@ export default function CampaignDetailPage() {
       }
       setLoading(false);
     });
-  }, [id, username]);
+  }, [id]);
 
-  if (loading) return <div className="auth-page"><p className="loading-text">Loading campaign...</p></div>;
+  if (loading) return <div className="vm-page-center"><PageLoader text="Loading campaign..." /></div>;
+
   if (error) return (
-    <div className="auth-page">
-      <div style={{ textAlign: 'center', marginTop: '3rem' }}>
-        <h2 style={{ color: '#c9a04e' }}>⚠ {error}</h2>
-        <button className="auth-btn" onClick={() => navigate('/campaigns')} style={{ marginTop: '1rem' }}>Back to Campaigns</button>
+    <div className="vm-page">
+      <div className="vm-empty-state">
+        <h2 className="vm-page-title">⚠ {error}</h2>
+        <button className="auth-btn" onClick={() => navigate('/campaigns')}>Back to Campaigns</button>
       </div>
     </div>
   );
 
+  const campaignTitle = session?.world_state?.campaign?.title || 'Campaign Detail';
+  const cls = session?.player?.character_class || '—';
+  const turnCount = session?.turn_number || turns.length;
+  const ended = session?.world_state?.campaign_ended;
+
   return (
-    <div className="auth-page">
-      <div style={{ maxWidth: 800, margin: '0 auto', padding: '2rem' }}>
-        <button className="auth-btn secondary" onClick={() => navigate('/campaigns')} style={{ marginBottom: '1rem' }}>← Back</button>
-        <h1 style={{ color: '#c9a04e' }}>{session?.world_state?.campaign?.title || 'Campaign Detail'}</h1>
-        <div style={{ color: '#666', marginTop: '0.5rem' }}>
-          {session?.player?.character_class} · {session?.turn_number || turns.length} turns · Session {id?.slice(0, 8)}...
+    <div className="vm-page">
+      <div className="vm-page-header">
+        <div>
+          <button className="vm-link" onClick={() => navigate('/campaigns')}>← Campaigns</button>
+          <h1 className="vm-page-title">{campaignTitle}</h1>
+          <p className="vm-page-subtitle">{cls} · {turnCount} turns · {id?.slice(0, 8)}...</p>
         </div>
-
-        {turns.length > 0 ? (
-          <div style={{ marginTop: '2rem' }}>
-            <h2 style={{ color: '#c9a04e' }}>Turn History</h2>
-            {turns.map((t, i) => (
-              <div key={i} style={{ background: '#1a1a2e', borderRadius: 8, padding: '1rem', marginTop: '0.75rem', borderLeft: '3px solid #c9a04e' }}>
-                <div style={{ color: '#c9a04e', fontSize: '0.85rem' }}>Turn {t.turn_number || i + 1}</div>
-                {t.player_input && <div style={{ color: '#e0e0e0', marginTop: '0.25rem' }}><strong>You:</strong> {t.player_input}</div>}
-                {t.intent?.description && <div style={{ color: '#a0a0a0', fontSize: '0.85rem', marginTop: '0.25rem' }}>{t.intent.description}</div>}
-                {t.roll && <div style={{ color: '#888', fontSize: '0.8rem', marginTop: '0.25rem' }}>Roll: {t.roll} → {t.outcome}</div>}
-              </div>
-            ))}
-          </div>
-        ) : (
-          <p style={{ color: '#666', marginTop: '2rem' }}>No turn history available.</p>
-        )}
-
-        {session?.world_state?.campaign_ended ? (
-          <div style={{ marginTop: '1rem' }}>
-            <span className="result-loss" style={{ padding: '0.5rem 1rem', borderRadius: 6 }}>Campaign Ended</span>
-          </div>
-        ) : session ? (
-          <button className="auth-btn" onClick={() => navigate(`/campaign/${id}`)} style={{ marginTop: '1rem' }}>
-            Resume Campaign
-          </button>
-        ) : null}
+        <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
+          {ended ? (
+            <span className="vm-badge vm-badge-danger">Ended</span>
+          ) : (
+            <button className="auth-btn" onClick={() => navigate(`/campaign/${id}`)}>Resume Campaign</button>
+          )}
+        </div>
       </div>
+
+      {turns.length > 0 ? (
+        <div className="vm-card-list">
+          {turns.map((t, i) => (
+            <div key={i} className="vm-card">
+              <div className="vm-card-main">
+                <div className="vm-card-title">Turn {t.turn_number || i + 1}</div>
+                {t.player_input && <div className="vm-card-meta"><strong>You:</strong> {t.player_input}</div>}
+                {t.intent?.description && <div className="vm-card-meta">{t.intent.description}</div>}
+              </div>
+              {t.roll && <span className="vm-badge">🎲 {t.roll} → {t.outcome}</span>}
+            </div>
+          ))}
+        </div>
+      ) : (
+        <div className="vm-empty-state">
+          <p>No turn history available for this campaign.</p>
+        </div>
+      )}
     </div>
   );
 }

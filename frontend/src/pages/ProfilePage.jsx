@@ -2,48 +2,69 @@ import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import * as api from '../api';
 import { useAuth } from '../AppRouter';
+import PageLoader from '../components/PageLoader';
 
 export default function ProfilePage() {
   const navigate = useNavigate();
   const { username } = useAuth();
   const [profile, setProfile] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
 
   useEffect(() => {
-    if (!username) { navigate('/login'); return; }
     api.getUserMe().then(data => {
       setProfile(data);
       setLoading(false);
-    }).catch(() => setLoading(false));
-  }, [username]);
+    }).catch(() => {
+      setError('Failed to load profile.');
+      setLoading(false);
+    });
+  }, []);
 
-  if (loading) return <div className="auth-page"><p className="loading-text">Loading profile...</p></div>;
+  if (loading) return <div className="vm-page-center"><PageLoader text="Loading profile..." /></div>;
+
+  if (error) return (
+    <div className="vm-page">
+      <div className="vm-empty-state">
+        <p>{error}</p>
+        <button className="auth-btn" onClick={() => navigate('/dashboard')}>Back to Dashboard</button>
+      </div>
+    </div>
+  );
+
+  const dimensions = profile?.profile_dimensions || null;
 
   return (
-    <div className="auth-page">
-      <div style={{ maxWidth: 600, margin: '0 auto', padding: '2rem' }}>
-        <h1 style={{ color: '#c9a04e' }}>Player Profile</h1>
-        <div className="profile-card" style={{ background: '#1a1a2e', borderRadius: 12, padding: '1.5rem', marginTop: '1rem' }}>
-          <p style={{ color: '#a0a0a0' }}><strong>Username:</strong> {profile?.username || username}</p>
-          <p style={{ color: '#a0a0a0' }}><strong>Role:</strong> {profile?.role || 'player'}</p>
-          <p style={{ color: '#a0a0a0' }}><strong>Joined:</strong> {profile?.created_at ? new Date(profile.created_at).toLocaleDateString() : '—'}</p>
-        </div>
+    <div className="vm-page">
+      <div className="vm-page-header">
+        <h1 className="vm-page-title">Player Profile</h1>
+      </div>
 
-        <h2 style={{ color: '#c9a04e', marginTop: '2rem' }}>Engagement Profile</h2>
-        <p style={{ color: '#666', fontSize: '0.9rem' }}>
-          Your play style is analyzed across sessions to personalize campaigns.
-          Profile emerges after 2-3 completed campaigns.
-        </p>
-        <div style={{ background: '#1a1a2e', borderRadius: 12, padding: '1.5rem', marginTop: '1rem' }}>
-          {profile?.profile_dimensions ? (
-            Object.entries(profile.profile_dimensions).map(([key, value]) => (
-              <div key={key} style={{ display: 'flex', justifyContent: 'space-between', padding: '0.5rem 0', borderBottom: '1px solid #2a2a3e' }}>
-                <span style={{ color: '#a0a0a0', textTransform: 'capitalize' }}>{key.replace(/_/g, ' ')}</span>
-                <span style={{ color: '#c9a04e' }}>{value.toFixed(2)}</span>
+      <div className="vm-card" style={{ maxWidth: 500 }}>
+        <div className="vm-profile-row"><span>Username</span><span className="vm-profile-val">{profile?.username || username}</span></div>
+        <div className="vm-profile-row"><span>Role</span><span className="vm-profile-val">{profile?.role || 'player'}</span></div>
+        <div className="vm-profile-row"><span>Joined</span><span className="vm-profile-val">{profile?.created_at ? new Date(profile.created_at).toLocaleDateString() : '—'}</span></div>
+      </div>
+
+      <div className="vm-section">
+        <h2 className="vm-section-title">Engagement Profile</h2>
+        <p className="vm-text-sm">Your play style is analyzed across sessions to personalize future campaigns. Profile emerges after 2-3 completed campaigns.</p>
+        <div className="vm-card" style={{ maxWidth: 500 }}>
+          {dimensions ? (
+            Object.entries(dimensions).map(([key, value]) => (
+              <div key={key} className="vm-profile-row">
+                <span>{key.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase())}</span>
+                <div className="vm-profile-bar-wrap">
+                  <div className="vm-profile-bar" style={{ width: `${((value + 1) / 2) * 100}%` }} />
+                  <span className="vm-profile-val">{value.toFixed(2)}</span>
+                </div>
               </div>
             ))
           ) : (
-            <p style={{ color: '#666' }}>No profile data yet. Complete campaigns to build your profile.</p>
+            <div className="vm-empty-state">
+              <p>No profile data yet. Complete campaigns to build your engagement profile.</p>
+              <button className="auth-btn" onClick={() => navigate('/new')}>Start a Campaign</button>
+            </div>
           )}
         </div>
       </div>

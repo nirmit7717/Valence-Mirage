@@ -48,7 +48,6 @@ export default function GameApp({ campaignId }) {
   const handleStart = useCallback(async (params) => {
     const data = await game.startSession(params);
     setConnected(true);
-    // Navigate to campaign route so refresh works
     if (data?.session_id) {
       navigate(`/campaign/${data.session_id}`, { replace: true });
     }
@@ -66,7 +65,10 @@ export default function GameApp({ campaignId }) {
           <div className="stage-waiting-text">
             <strong>⚠ {restoreError}</strong>
             <br /><br />
-            <button className="auth-btn" onClick={() => navigate('/new')}>Start New Campaign</button>
+            <div style={{ display: 'flex', gap: '0.5rem', justifyContent: 'center' }}>
+              <button className="auth-btn" onClick={() => navigate('/new')}>New Campaign</button>
+              <button className="auth-btn secondary" onClick={() => navigate('/campaigns')}>Campaign History</button>
+            </div>
           </div>
         </div>
       </div>
@@ -75,6 +77,18 @@ export default function GameApp({ campaignId }) {
 
   return (
     <div className="game-root">
+      {/* Minimal game header — only when connected */}
+      {connected && (
+        <div className="game-mini-bar">
+          <button className="back-btn" onClick={() => navigate('/dashboard')}>← Leave</button>
+          <span className="game-top-title">
+            🎲 {game.sessionInfo?.title || 'Valence Mirage'}
+            {game.sessionInfo ? ` · Turn ${game.sessionInfo.turn}` : ''}
+          </span>
+          <span />
+        </div>
+      )}
+
       {!connected ? (
         <>
           <ConnectOverlay onStart={handleStart} onCancel={() => navigate('/dashboard')} />
@@ -84,12 +98,6 @@ export default function GameApp({ campaignId }) {
         <>
           <FloatingHUD data={game.sidebar} />
           <div className="game-stage">
-            <div className="stage-header">
-              <span className="stage-title">🎲 Valence Mirage</span>
-              <span className="stage-info">
-                {game.sessionInfo ? `Turn ${game.sessionInfo.turn} | ${game.sessionInfo.title}` : ''}
-              </span>
-            </div>
             {!game.combat && !game.narration && !game.diceResult && (
               <div className="stage-waiting">
                 <div className="stage-waiting-text">
@@ -99,10 +107,7 @@ export default function GameApp({ campaignId }) {
             )}
           </div>
 
-          <DiceRoll
-            diceResult={game.diceResult}
-            onComplete={game.onDiceAnimationComplete}
-          />
+          <DiceRoll diceResult={game.diceResult} onComplete={game.onDiceAnimationComplete} />
 
           <NarrativeCard
             narration={game.narration}
@@ -113,11 +118,7 @@ export default function GameApp({ campaignId }) {
             inputDisabled={game.gameOver}
           />
           <CombatOverlay combat={game.combat} onResolve={game.resolveCombat} animationsEnabled={animationsEnabled} />
-          <CampaignEndOverlay
-            show={game.campaignEnded}
-            victory={game.victory}
-            gameOver={game.gameOver}
-          />
+          <CampaignEndOverlay show={game.campaignEnded} victory={game.victory} gameOver={game.gameOver} />
           <LoadingOverlay show={game.loading} hasRoll={false} />
         </>
       )}

@@ -2,48 +2,48 @@ import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import * as api from '../api';
 import { useAuth } from '../AppRouter';
+import PageLoader from '../components/PageLoader';
 import './auth.css';
 
 export default function DashboardPage() {
   const navigate = useNavigate();
-  const { username, logout } = useAuth();
+  const { username, logout: authLogout } = useAuth();
   const [user, setUser] = useState(null);
   const [campaigns, setCampaigns] = useState([]);
   const [stats, setStats] = useState(null);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    if (!username) { navigate('/login'); return; }
     api.getUserDashboard().then(data => {
       setUser(data.user);
-      setCampaigns(data.campaigns);
+      setCampaigns(data.campaigns || []);
       setStats(data.stats);
       setLoading(false);
     }).catch(() => {
-      logout();
+      authLogout();
       navigate('/login');
     });
-  }, [username]);
+  }, []);
 
   const handleLogout = () => {
-    logout();
+    authLogout();
     navigate('/login');
   };
 
-  if (loading) return <div className="auth-page"><p className="loading-text">Loading...</p></div>;
+  if (loading) return <div className="vm-page-center"><PageLoader text="Loading dashboard..." /></div>;
 
   const winRate = stats?.total_campaigns > 0
     ? Math.round((stats.wins / stats.total_campaigns) * 100) : 0;
 
   return (
-    <div className="dashboard-page">
-      <header className="dashboard-header">
-        <h1>Valence Mirage</h1>
-        <div className="header-right">
-          <span>Welcome, {user?.username || username}</span>
-          <button className="auth-btn secondary" onClick={handleLogout}>Logout</button>
+    <div className="vm-page">
+      <div className="vm-page-header">
+        <div>
+          <h1 className="vm-page-title">Dashboard</h1>
+          <p className="vm-page-subtitle">Welcome back, {user?.username || username}</p>
         </div>
-      </header>
+        <button className="auth-btn" onClick={() => navigate('/new')}>+ New Campaign</button>
+      </div>
 
       <div className="stats-grid">
         <div className="stat-card">
@@ -64,32 +64,32 @@ export default function DashboardPage() {
         </div>
       </div>
 
-      <div className="campaigns-section">
-        <div className="section-header">
-          <h2>Past Campaigns</h2>
-          <button className="auth-btn" onClick={() => navigate('/new')}>New Game</button>
+      <div className="vm-section">
+        <div className="vm-section-header">
+          <h2>Campaign History</h2>
+          {campaigns.length > 0 && (
+            <button className="vm-link" onClick={() => navigate('/campaigns')}>View All →</button>
+          )}
         </div>
         {campaigns.length === 0 ? (
-          <p className="no-campaigns">No campaigns yet. Start your first adventure!</p>
+          <div className="vm-empty-state">
+            <p>No campaigns yet. Your legend awaits.</p>
+            <button className="auth-btn" onClick={() => navigate('/new')}>Begin Your First Adventure</button>
+          </div>
         ) : (
-          <table className="campaigns-table">
-            <thead>
-              <tr>
-                <th>Title</th><th>Result</th><th>Turns</th><th>Class</th><th>Date</th>
-              </tr>
-            </thead>
-            <tbody>
-              {campaigns.map(c => (
-                <tr key={c.id} onClick={() => navigate(`/campaign/${c.session_id}/history`)} style={{ cursor: 'pointer' }}>
-                  <td>{c.campaign_title || '—'}</td>
-                  <td className={c.result === 'victory' ? 'result-win' : 'result-loss'}>{c.result}</td>
-                  <td>{c.turns}</td>
-                  <td>{c.character_class}</td>
-                  <td>{new Date(c.created_at).toLocaleDateString()}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+          <div className="vm-card-list">
+            {campaigns.slice(0, 5).map(c => (
+              <div key={c.id} className="vm-card" onClick={() => navigate(`/campaign/${c.session_id}/history`)}>
+                <div className="vm-card-main">
+                  <div className="vm-card-title">{c.campaign_title || 'Untitled Campaign'}</div>
+                  <div className="vm-card-meta">{c.character_class} · {c.turns} turns · {new Date(c.created_at).toLocaleDateString()}</div>
+                </div>
+                <span className={`vm-badge ${c.result === 'victory' ? 'vm-badge-success' : 'vm-badge-danger'}`}>
+                  {c.result || '—'}
+                </span>
+              </div>
+            ))}
+          </div>
         )}
       </div>
     </div>

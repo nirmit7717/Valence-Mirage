@@ -10,6 +10,7 @@ export default function LoginPage() {
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
+  const [loading, setLoading] = useState(false);
   const [showTester, setShowTester] = useState(false);
   const [testerEmail, setTesterEmail] = useState('');
   const [testerMsg, setTesterMsg] = useState('');
@@ -17,12 +18,15 @@ export default function LoginPage() {
   const handleLogin = async (e) => {
     e.preventDefault();
     setError('');
+    setLoading(true);
     try {
       const data = await api.login(username, password);
       login(data.access_token, username);
       navigate('/dashboard');
     } catch (err) {
       setError(err.message);
+    } finally {
+      setLoading(false);
     }
   };
 
@@ -58,15 +62,13 @@ export default function LoginPage() {
         <form className="auth-form" onSubmit={handleLogin}>
           <h2>Sign In</h2>
           {error && <div className="auth-error">{error}</div>}
-          <input
-            type="text" placeholder="Username" value={username}
-            onChange={e => setUsername(e.target.value)} required
-          />
-          <input
-            type="password" placeholder="Password" value={password}
-            onChange={e => setPassword(e.target.value)} required
-          />
-          <button type="submit" className="auth-btn">Sign In</button>
+          <input type="text" placeholder="Username" value={username}
+            onChange={e => setUsername(e.target.value)} required disabled={loading} />
+          <input type="password" placeholder="Password" value={password}
+            onChange={e => setPassword(e.target.value)} required disabled={loading} />
+          <button type="submit" className="auth-btn" disabled={loading}>
+            {loading ? 'Signing in...' : 'Sign In'}
+          </button>
         </form>
         <div className="tester-section">
           <button className="tester-toggle" onClick={() => setShowTester(!showTester)}>
@@ -74,10 +76,8 @@ export default function LoginPage() {
           </button>
           {showTester && (
             <form className="tester-form" onSubmit={handleTester}>
-              <input
-                type="email" placeholder="your@email.com" value={testerEmail}
-                onChange={e => setTesterEmail(e.target.value)} required
-              />
+              <input type="email" placeholder="your@email.com" value={testerEmail}
+                onChange={e => setTesterEmail(e.target.value)} required />
               <button type="submit" className="auth-btn secondary">Submit</button>
               {testerMsg && <p className="tester-msg">{testerMsg}</p>}
             </form>
