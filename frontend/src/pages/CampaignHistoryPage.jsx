@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import * as api from '../api';
 import PageLoader from '../components/PageLoader';
+import CampaignCard from '../components/CampaignCard';
 
 export default function CampaignHistoryPage() {
   const navigate = useNavigate();
@@ -20,7 +21,6 @@ export default function CampaignHistoryPage() {
   }, []);
 
   if (loading) return <div className="vm-page-center"><PageLoader text="Loading campaigns..." /></div>;
-
   if (error) return (
     <div className="vm-page">
       <div className="vm-empty-state">
@@ -45,15 +45,7 @@ export default function CampaignHistoryPage() {
       ) : (
         <div className="vm-card-list">
           {campaigns.map(c => (
-            <div key={c.id} className="vm-card vm-card-clickable" onClick={() => navigate(`/campaign/${c.session_id}/history`)}>
-              <div className="vm-card-main">
-                <div className="vm-card-title">{c.campaign_title || 'Untitled Campaign'}</div>
-                <div className="vm-card-meta">{c.character_class} · {c.turns} turns · {new Date(c.created_at).toLocaleDateString()}</div>
-              </div>
-              <span className={`vm-badge ${c.result === 'victory' ? 'vm-badge-success' : 'vm-badge-danger'}`}>
-                {c.result || '—'}
-              </span>
-            </div>
+            <CampaignCard key={c.id} campaign={c} onClick={() => navigate(`/campaign/${c.session_id}/history`)} />
           ))}
         </div>
       )}

@@ -1,4 +1,5 @@
 import { useNavigate } from 'react-router-dom';
+import { CLASS_DATA } from '../data/classes';
 
 export default function AboutPage() {
   const navigate = useNavigate();
@@ -31,18 +32,14 @@ export default function AboutPage() {
 
       <div className="vm-section">
         <h2 className="vm-section-title">Character Classes</h2>
-        <div className="vm-class-grid">
-          {[
-            { emoji: '⚔️', name: 'Warrior', desc: 'Brute force, high HP, melee mastery' },
-            { emoji: '🗡️', name: 'Rogue', desc: 'Stealth, poison, critical strikes' },
-            { emoji: '🔮', name: 'Wizard', desc: 'Arcane magic, area damage, high mana' },
-            { emoji: '✨', name: 'Cleric', desc: 'Healing, holy damage, support' },
-            { emoji: '🎵', name: 'Bard', desc: 'Inspiration, mockery, crowd control' },
-          ].map(cls => (
-            <div key={cls.name} className="vm-class-card">
-              <span className="vm-class-emoji">{cls.emoji}</span>
-              <div className="vm-class-name">{cls.name}</div>
-              <div className="vm-class-desc">{cls.desc}</div>
+        <div className="about-class-grid">
+          {Object.entries(CLASS_DATA).map(([key, cls]) => (
+            <div key={key} className="about-class-card" style={{ '--class-accent': cls.accent }}
+              onClick={() => navigate(`/roles/${key}`)}>
+              <div className="about-class-emoji">{cls.emoji}</div>
+              <div className="about-class-name">{cls.name}</div>
+              <div className="about-class-tagline">{cls.tagline.split('.')[0]}.</div>
+              <div className="about-class-link">View Details →</div>
             </div>
           ))}
         </div>

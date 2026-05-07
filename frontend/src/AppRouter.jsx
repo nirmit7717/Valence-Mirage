@@ -7,16 +7,12 @@ import AboutPage from './pages/AboutPage';
 import ProfilePage from './pages/ProfilePage';
 import CampaignHistoryPage from './pages/CampaignHistoryPage';
 import CampaignDetailPage from './pages/CampaignDetailPage';
+import RolePage from './pages/RolePage';
 import Navbar from './components/Navbar';
 import ProtectedRoute from './components/ProtectedRoute';
 
-// Minimal auth context — token + user info
 const AuthContext = createContext(null);
 export const useAuth = () => useContext(AuthContext);
-
-// Pages where navbar should be hidden
-const NO_NAVBAR_ROUTES = ['/', '/login'];
-const NO_NAVBAR_PREFIXES = ['/campaign/', '/new'];
 
 function shouldHideNavbar(pathname) {
   if (NO_NAVBAR_ROUTES.includes(pathname)) return true;
@@ -24,6 +20,7 @@ function shouldHideNavbar(pathname) {
   if (pathname.startsWith('/campaign/')) return true;
   return false;
 }
+const NO_NAVBAR_ROUTES = ['/', '/login'];
 
 function AppShell() {
   const location = useLocation();
@@ -38,6 +35,7 @@ function AppShell() {
             <Route path="/" element={<LoginPage />} />
             <Route path="/login" element={<LoginPage />} />
             <Route path="/about" element={<AboutPage />} />
+            <Route path="/roles/:role" element={<RolePage />} />
             <Route path="/dashboard" element={<ProtectedRoute><DashboardPage /></ProtectedRoute>} />
             <Route path="/new" element={<ProtectedRoute><GamePage /></ProtectedRoute>} />
             <Route path="/campaign/:id" element={<GamePage />} />
