@@ -10,3 +10,4 @@ chromadb==0.6.3
 python-jose==3.3.0
 passlib==1.7.4
 bcrypt==4.1.2
+posthog<6.0.0

@@ -101,7 +101,7 @@ async def _restore_sessions(app):
 app = FastAPI(
     title="Valence Mirage",
     description="AI-powered narrative engine with probabilistic dice mechanics",
-    version="0.4.0",
+    version="0.6.2",
     lifespan=lifespan,
 )
 
@@ -225,20 +225,21 @@ async def root():
 async def spa_fallback(path: str):
     """Serve actual static files or index.html for SPA client-side routes."""
     import os
+    BASE_STATIC = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'static')
+    file_path = os.path.join(BASE_STATIC, path)
     if path == "" or path.endswith("/"):
-        return FileResponse("static/index.html")
-    file_path = os.path.join("static", path)
+        return FileResponse(os.path.join(BASE_STATIC, "index.html"))
     if os.path.isfile(file_path):
         return FileResponse(file_path)
     # SPA fallback — serve index.html for React Router paths
-    return FileResponse("static/index.html")
+    return FileResponse(os.path.join(BASE_STATIC, "index.html"))
 
 
 @app.get("/health")
 async def health():
     return {
         "name": "Valence Mirage",
-        "version": "0.4.0",
+        "version": "0.6.2",
         "status": "running",
         "active_sessions": len(app.state.state_manager._sessions),
         "db": "connected",

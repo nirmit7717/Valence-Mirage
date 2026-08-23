@@ -137,7 +137,7 @@ frontend/
 
 ## Project Status
 
-**v0.8.0 — Active Development**
+**v0.6.2 — Active Development**
 
 | Phase | Focus | Status |
 |-------|-------|--------|
@@ -196,12 +196,47 @@ NVIDIA_API_KEY="your-key-here"
 # Optional: NARRATOR_MODEL="meta/llama-3.3-70b-instruct"
 ```
 
-#### 5. Run the Server
+#### 5. Run in Development Mode
+
+**Start Backend Server:**
+In the `backend/` directory, activate the virtual environment, install dependencies, and start the development server using `uvicorn`:
+```powershell
+# Windows
+cd backend
+.\venv\Scripts\activate
+pip install -r requirements.txt
+python -m uvicorn main:app --reload --port 8000
+```
 ```bash
-python main.py
+# macOS/Linux
+cd backend
+source venv/bin/activate
+pip install -r requirements.txt
+python -m uvicorn main:app --reload --port 8000
 ```
 
-Open [http://localhost:8000](http://localhost:8000) in your browser.
+**Start Frontend Client:**
+In the `frontend/` directory, install dependencies and start the Vite development server:
+```bash
+cd frontend
+npm install
+npm run dev
+```
+Open [http://localhost:5173](http://localhost:5173) in your browser.
+
+#### 6. Run in Production Mode
+
+Build the frontend static assets and export them directly to the backend:
+```bash
+cd frontend
+npm run build
+```
+Once built, start the backend server from the `backend/` directory:
+```bash
+cd backend
+python main.py
+```
+Open [http://localhost:8000/static/](http://localhost:8000/static/) in your browser.
 
 ### API Endpoints
 

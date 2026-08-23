@@ -1,10 +1,12 @@
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 
+const isDev = process.env.NODE_ENV === 'development'
 export default defineConfig({
   plugins: [react()],
-  base: '/static/',
+  base: isDev ? '/' : '/static/',
   server: {
+    host: true,
     proxy: {
       '/session': 'http://localhost:8000',
       '/sessions': 'http://localhost:8000',

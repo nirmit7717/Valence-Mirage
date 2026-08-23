@@ -23,7 +23,11 @@ class VectorStore:
     """Manages ChromaDB collections for rules and narrative trajectories."""
 
     def __init__(self):
-        self.client = chromadb.PersistentClient(path=str(CHROMA_DIR))
+        from chromadb.config import Settings
+        self.client = chromadb.PersistentClient(
+            path=str(CHROMA_DIR),
+            settings=Settings(anonymized_telemetry=False)
+        )
         self.embedder = EmbeddingGenerator()
         self.rules_collection = None
         self.trajectories_collection = None
