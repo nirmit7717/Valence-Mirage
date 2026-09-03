@@ -10,6 +10,7 @@ from models.game_state import PlayerState
 from engines.campaign_planner import CampaignPlanner, CampaignBlueprint
 from rag import RuleRetriever
 import config
+from engines.llm_utils import extract_message_text
 from tenacity import retry, stop_after_attempt, wait_exponential
 
 logger = logging.getLogger(__name__)
@@ -154,7 +155,12 @@ class Narrator:
                 temperature=narration_params.get("temperature", 0.85) if narration_params else 0.85,
                 max_tokens=narration_params.get("max_tokens", 500) if narration_params else 500,
             )
-            narration = response.choices[0].message.content.strip()
+            content = extract_message_text(response)
+            if not content:
+                logger.warning("Narrator: empty narration content returned from model")
+                return f"Your {intent.action_type} results in {outcome_result}. The world shifts around you."
+
+            narration = content.strip()
             logger.debug(f"Narration: {narration[:100]}...")
             return narration
 
@@ -186,13 +192,17 @@ class Narrator:
             response = await self.client.chat.completions.create(
                 model=config.INTENT_MODEL,  # cheap 8b for openings
                 messages=[
-                    {"role": "system", "content": "You are a dark fantasy RPG narrator. Write vivid, atmospheric prose. No JSON, no meta-commentary."},
+                    {"role": "system", "content": "You are a dark fantasy RPG narrator. Write vivid atmospheric prose only. No JSON. No markdown. No reasoning blocks. No empty responses. No meta-commentary."},
                     {"role": "user", "content": user_msg},
                 ],
                 temperature=0.9,
                 max_tokens=500,
             )
-            return response.choices[0].message.content.strip()
+            content = extract_message_text(response)
+            if not content:
+                logger.warning("Narrator: empty opening narration content returned from model")
+                return f"You find yourself in {setting}. {premise} The journey ahead is shrouded in mystery."
+            return content.strip()
         except Exception as e:
             logger.warning(f"Opening narration failed: {e}")
             return f"You find yourself in {setting}. {premise} The journey ahead is shrouded in mystery."
@@ -216,7 +226,11 @@ class Narrator:
                 temperature=0.8,
                 max_tokens=150,
             )
-            return response.choices[0].message.content.strip()
+            content = extract_message_text(response)
+            if not content:
+                logger.warning("Narrator: empty combat narration content returned from model")
+                return f"{action_description}. {result}."
+            return content.strip()
         except Exception as e:
             logger.warning(f"Combat narration failed: {e}")
             return f"{action_description}. {result}."

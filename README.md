@@ -126,8 +126,8 @@ frontend/
 | Backend | Python 3, FastAPI, Uvicorn |
 | Frontend | React + Vite + React Router (dark fantasy immersive UI) |
 | Auth | JWT (python-jose), bcrypt (passlib) |
-| AI — Intent Parsing | Llama 3.1 8B (NVIDIA NIM) |
-| AI — Narration | Llama 3.3 70B (NVIDIA NIM) |
+| AI — Intent Parsing | Llama 3.2 11B Vision Instruct (NVIDIA NIM) |
+| AI — Narration | Llama 3.2 11B Vision Instruct (NVIDIA NIM) |
 | AI — Embeddings | NV-EmbedQA-E5 (NVIDIA NIM) |
 | Vector Search | ChromaDB |
 | Storage | SQLite (aiosqlite) |

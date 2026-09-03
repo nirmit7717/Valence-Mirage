@@ -9,6 +9,7 @@ from openai import AsyncOpenAI
 from pydantic import BaseModel, Field
 
 import config
+from engines.llm_utils import extract_message_text
 
 logger = logging.getLogger(__name__)
 
@@ -18,7 +19,7 @@ PROMPT_PATH = Path(__file__).parent.parent / "prompts" / "campaign_plan.txt"
 class StoryBeat(BaseModel):
     beat_id: int
     title: str
-    description: str = ""
+    description: str = ""  
     type: str = "exploration"
     key_npcs: list[str] = []
     probability_modifier: float = 0.0
@@ -50,7 +51,7 @@ class CampaignPlanner:
             base_url=config.NVIDIA_BASE_URL,
             api_key=config.NVIDIA_API_KEY,
             timeout=30.0,
-            max_retries=1,
+            max_retries=2,
         )
         self.prompt = PROMPT_PATH.read_text()
 
@@ -84,26 +85,38 @@ class CampaignPlanner:
         else:
             user_msg += "Generate a complete campaign blueprint for a single-session dark fantasy adventure.\n"
 
-        try:
-            response = await self.client.chat.completions.create(
-                model=config.INTENT_MODEL,
-                messages=[
-                    {"role": "system", "content": self.prompt},
-                    {"role": "user", "content": user_msg},
-                ],
-                temperature=0.7,
-                max_tokens=1000,
-            )
+        request_kwargs = {
+            "model": config.INTENT_MODEL,
+            "messages": [
+                {"role": "system", "content": self.prompt},
+                {"role": "user", "content": user_msg},
+            ],
+            "temperature": 0.7,
+            "max_tokens": 1000,
+        }
 
-            raw = response.choices[0].message.content.strip()
+        try:
+            try:
+                response = await self.client.chat.completions.create(
+                    **request_kwargs,
+                    response_format={"type": "json_object"},
+                )
+            except Exception as e:
+                logger.warning(f"JSON-mode blueprint request failed, retrying without JSON mode: {e}")
+                response = await self.client.chat.completions.create(**request_kwargs)
+
+            raw = extract_message_text(response)
             logger.info(f"Campaign blueprint raw: {raw[:200]}...")
+
+            if not raw:
+                logger.warning("Campaign blueprint response contained no text content; using fallback blueprint")
+                return self._fallback_blueprint(player_name)
 
             data = self._parse_json_robust(raw)
             if data:
                 return CampaignBlueprint(**data)
-            else:
-                logger.warning("Could not parse campaign JSON, using fallback")
-                return self._fallback_blueprint(player_name)
+            logger.warning("Could not parse campaign JSON, using fallback")
+            return self._fallback_blueprint(player_name)
 
         except Exception as e:
             logger.warning(f"Campaign blueprint generation failed: {e}")
@@ -179,12 +192,20 @@ class CampaignPlanner:
 
         beat_ids = [b.beat_id for b in current_act.beats]
         if beat_ids and blueprint.current_beat < max(beat_ids):
-            blueprint.current_beat += 1
+            # Beat IDs are generated from the campaign template and may not be
+            # contiguous within an act. Advance to the next actual beat ID.
+            next_beat = next((beat_id for beat_id in sorted(beat_ids)
+                              if beat_id > blueprint.current_beat), None)
+            if next_beat is not None:
+                blueprint.current_beat = next_beat
+            else:
+                blueprint.current_beat = max(beat_ids)
         else:
             act_ids = [a.act_id for a in blueprint.acts]
             if act_ids and blueprint.current_act < max(act_ids):
                 blueprint.current_act += 1
-                blueprint.current_beat = 1
+                next_act = next((act for act in blueprint.acts if act.act_id == blueprint.current_act), None)
+                blueprint.current_beat = min((beat.beat_id for beat in next_act.beats), default=1)
 
         return blueprint
 

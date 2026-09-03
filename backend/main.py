@@ -300,12 +300,18 @@ async def create_session(req: NewSessionRequest = NewSessionRequest(), authoriza
     session.world_state["abilities"] = [a.model_dump() for a in abilities]
     session.world_state["class_description"] = CLASS_DESCRIPTIONS.get(cls, "")
 
+    # Load profile for adaptive campaign weighting before blueprint generation
+    user_id = session.world_state.get("user_id")
+    player_profile = None
+    if user_id:
+        player_profile = await db.load_profile(user_id)
+    session.world_state["player_profile"] = player_profile.model_dump() if player_profile else None
+
     # Generate campaign blueprint with template
     from data.campaign_templates import CAMPAIGN_TEMPLATES
     template = CAMPAIGN_TEMPLATES.get(req.campaign_size.lower(), CAMPAIGN_TEMPLATES["medium"])
     session.world_state["campaign_size"] = req.campaign_size.lower()
     session.world_state["campaign_template"] = template.model_dump()
-
 
     _bw = get_beat_weights(player_profile)
     blueprint = await planner.generate_blueprint(req.player_name, keywords=req.keywords, template=template, beat_weights=_bw)
@@ -341,13 +347,6 @@ async def create_session(req: NewSessionRequest = NewSessionRequest(), authoriza
     tracker: EngagementTracker = app.state.engagement_tracker
     tracker.start_session(session.session_id)
 
-    # Load player profile (if authenticated) for adaptive generation
-    user_id = session.world_state.get("user_id")
-    player_profile = None
-    if user_id:
-        player_profile = await db.load_profile(user_id)
-    session.world_state["player_profile"] = player_profile.model_dump() if player_profile else None
-
     # Generate opening narration
     narrator: Narrator = app.state.narrator
     opening_narration = ""
@@ -361,8 +360,12 @@ async def create_session(req: NewSessionRequest = NewSessionRequest(), authoriza
             character_class=cls.value,
         )
         session.world_state["situation"] = opening_narration[-500:]
+        session.world_state["opening_narration"] = clean_narration(opening_narration)
+        session.world_state["opening_choices"] = extract_choices(opening_narration)
     except Exception as e:
         logger.warning(f"Opening narration failed: {e}")
+        session.world_state["opening_narration"] = ""
+        session.world_state["opening_choices"] = []
 
     await db.save_session(session)
 
@@ -423,6 +426,8 @@ async def hydrate_session(session_id: str):
     campaign = session.world_state.get("campaign", {})
     combat_ws = session.world_state.get("combat")
     campaign_ended = session.world_state.get("campaign_ended", False)
+    opening_narration = session.world_state.get("opening_narration") or session.world_state.get("situation") or ""
+    opening_choices = session.world_state.get("opening_choices") or extract_choices(opening_narration)
 
     # Rebuild sidebar-relevant data
     from models.character import CLASS_ABILITIES, CLASS_DESCRIPTIONS
@@ -452,6 +457,8 @@ async def hydrate_session(session_id: str):
         "campaign_size": session.world_state.get("campaign_size", "medium"),
         "location": session.world_state.get("location", ""),
         "situation": session.world_state.get("situation", ""),
+        "opening_narration": clean_narration(opening_narration),
+        "choices": opening_choices,
         "campaign_objective": session.world_state.get("campaign_objective", ""),
         "combat": combat_ws if combat_ws and not combat_ws.get("resolved", False) else None,
         "campaign_ended": campaign_ended,
@@ -610,9 +617,10 @@ async def submit_action(session_id: str, req: ActionRequest):
             current_beat_title = beat.title
             if beat.type == "combat":
                 combat_beat_available = True
-        # Update current act/beat tracking
-        session.world_state["current_act"] = bp.acts[0].act_id if bp.acts else 1
-        session.world_state["current_beat"] = bp.acts[0].beats[0].beat_id if bp.acts and bp.acts[0].beats else 1
+        # Keep the persisted blueprint position; do not reset it to act one on
+        # every action.
+        session.world_state["current_act"] = bp.current_act
+        session.world_state["current_beat"] = bp.current_beat
 
     # Track pacing — two independent counters
     turns_since_roll = session.world_state.get("turns_since_roll", 0)
@@ -879,11 +887,14 @@ async def submit_action(session_id: str, req: ActionRequest):
 
     # ── Trigger combat when tension reaches threshold ──
     pending_combat = session.world_state.get("pending_combat", False)
-    if combat_tension >= combat_tension_threshold and not session.world_state.get("combat"):
+    if (combat_beat_available or combat_tension >= combat_tension_threshold) and not session.world_state.get("combat"):
         session.world_state["combat_tension"] = 0
         session.world_state["pending_combat"] = True
         pending_combat = True
-        logger.info(f"Combat triggered: tension {combat_tension} >= {combat_tension_threshold}, flagging narrator")
+        logger.info(
+            "Combat triggered: %s, flagging narrator",
+            "hard combat beat" if combat_beat_available else f"tension {combat_tension} >= {combat_tension_threshold}",
+        )
 
     # Build combat context for narrator if pending
     _combat_ctx = None
@@ -1598,6 +1609,9 @@ async def resolve_combat(session_id: str, req: CombatResolveRequest):
         if not session:
             raise HTTPException(status_code=404, detail="Session not found")
 
+    profile_data = session.world_state.get("player_profile")
+    narration_params = get_narration_params(PlayerProfile(**profile_data) if profile_data else None)
+
     # Sync player HP/mana from combat
     session.player.hp = max(0, min(session.player.max_hp, req.player_hp))
     session.player.mana = max(0, min(session.player.max_mana, req.player_mana))
@@ -1648,7 +1662,7 @@ async def resolve_combat(session_id: str, req: CombatResolveRequest):
                 player=session.player,
                 world_state=session.world_state,
                 turn_history=session.turn_history,
-                narration_params=_narration_params,
+                narration_params=narration_params,
             )
         except Exception:
             narration = f"The {req.enemy_name} falls. The battle is won. What lies ahead?"
@@ -1687,7 +1701,7 @@ async def resolve_combat(session_id: str, req: CombatResolveRequest):
                 player=session.player,
                 world_state=session.world_state,
                 turn_history=session.turn_history,
-                narration_params=_narration_params,
+                narration_params=narration_params,
             )
         except Exception:
             narration = f"The {req.enemy_name} overwhelms you. Darkness takes hold..."

@@ -9,6 +9,7 @@ from pydantic import ValidationError
 
 from models.action import ActionIntent
 import config
+from engines.llm_utils import extract_message_text
 from tenacity import retry, stop_after_attempt, wait_exponential
 
 logger = logging.getLogger(__name__)
@@ -28,12 +29,20 @@ class IntentParser:
 
     @retry(stop=stop_after_attempt(2), wait=wait_exponential(multiplier=1, min=1, max=4))
     async def _safe_chat_completion(self, messages):
-        return await self.client.chat.completions.create(
-            model=config.INTENT_MODEL,
-            messages=messages,
-            temperature=0.1,
-            max_tokens=300,
-        )
+        request_kwargs = {
+            "model": config.INTENT_MODEL,
+            "messages": messages,
+            "temperature": 0.1,
+            "max_tokens": 300,
+        }
+        try:
+            return await self.client.chat.completions.create(
+                **request_kwargs,
+                response_format={"type": "json_object"},
+            )
+        except Exception as exc:
+            logger.warning(f"JSON-mode intent request failed, retrying without JSON mode: {exc}")
+            return await self.client.chat.completions.create(**request_kwargs)
 
     async def parse(self, player_input: str, world_context: str, stats_summary: str) -> ActionIntent:
         user_message = (
@@ -49,7 +58,7 @@ class IntentParser:
                     {"role": "user", "content": user_message},
                 ]
             )
-            raw = response.choices[0].message.content.strip()
+            raw = extract_message_text(response).strip()
             logger.debug(f"Intent parser raw output: {raw}")
         except Exception as e:
             logger.error(f"Intent parsing API failure: {e}")

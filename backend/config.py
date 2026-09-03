@@ -1,19 +1,49 @@
 # config.py — Valence Mirage Configuration
 
 import os
+from pathlib import Path
+
 from dotenv import load_dotenv
 
-load_dotenv()
+BASE_DIR = Path(__file__).resolve().parent
+load_dotenv(BASE_DIR / ".env", override=True)
 
 # ─── LLM Configuration (NVIDIA NIM) ───
 NVIDIA_API_KEY = os.getenv("NVIDIA_API_KEY", "")
+EMBEDDING_API_KEY = os.getenv("EMBEDDING_API_KEY", "")                                                                                                                                                                                                                                   
 NVIDIA_BASE_URL = os.getenv("NVIDIA_BASE_URL", "https://integrate.api.nvidia.com/v1")
 
-# Intent parser model (fast, structured output)
-INTENT_MODEL = os.getenv("INTENT_MODEL", "meta/llama-3.1-8b-instruct")
+# Some NVIDIA models (notably gpt-oss reasoning variants and old Nemotron models)
+# are slower or noisier for structured gameplay generation. Keep the app on a
+# tested, stable 11B model that reliably returns clean chat output.
+_BLOCKED_MODEL_HINTS = (
+    "nv-embed-v1",
+    "gpt-oss",
+    "openai/gpt-oss",
+    "nemotron-3.5-lightning",
+    "nemotron",
+    "deepseek-r1",
+    "qwq",
+    "reasoning",
+)
 
-# Narrator model (more capable, creative)
-NARRATOR_MODEL = os.getenv("NARRATOR_MODEL", "meta/llama-3.3-70b-instruct")
+
+def _safe_model_name(env_name: str, fallback: str) -> str:
+    value = (os.getenv(env_name) or fallback).strip()
+    lowered = value.lower()
+    if any(hint in lowered for hint in _BLOCKED_MODEL_HINTS):
+        return fallback
+    return value
+
+
+# Stable default for gameplay generation. These IDs have been verified against the
+# current NVIDIA account and return usable text without the timeout/reasoning issues
+# seen with the prior gpt-oss defaults.
+INTENT_MODEL = _safe_model_name("INTENT_MODEL", "meta/llama-3.2-11b-vision-instruct")
+NARRATOR_MODEL = _safe_model_name("NARRATOR_MODEL", "meta/llama-3.2-11b-vision-instruct")
+
+# Embedding model for vector search; the old nv-embed-v1 was retired.
+EMBEDDING_MODEL = _safe_model_name("EMBEDDING_MODEL", "nvidia/nemotron-3-embed-1b")
 
 # ─── Probability Engine ───
 SIGMOID_SCALE = 5.0

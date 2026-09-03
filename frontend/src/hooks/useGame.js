@@ -106,6 +106,20 @@ export function useGame() {
         setCampaignEnded(true);
       }
 
+      const restoredNarrationText = data.opening_narration || data.situation || data.campaign?.premise || data.campaign?.title || '';
+      if (restoredNarrationText) {
+        const restoredChoices = Array.isArray(data.choices) && data.choices.length
+          ? data.choices
+          : [...new Set((restoredNarrationText.match(/(?:^|\n)→\s*(.+)/g) || []).map(line => line.replace(/^\s*→\s*|^\s*->\s*/g, '').trim()).filter(Boolean))];
+        setNarration({
+          html: `<strong>📜 ${data.campaign?.title || 'Campaign'}</strong><br/><br/>${restoredNarrationText}`,
+          meta: null,
+          choices: restoredChoices.length ? restoredChoices : null,
+          combatData: null,
+          pendingOutcome: null,
+        });
+      }
+
       // Restore sidebar
       const classEmoji = { warrior: '⚔️', rogue: '🗡️', wizard: '🔮', cleric: '✨', bard: '🎵' };
       setSidebar({

@@ -9,6 +9,7 @@ from openai import AsyncOpenAI
 from pydantic import BaseModel, Field
 
 import config
+from engines.llm_utils import extract_message_text
 
 logger = logging.getLogger(__name__)
 
@@ -107,27 +108,38 @@ class NPCEngine:
 
         user_msg = f"Player ({player_name}) says/does: \"{player_action}\""
 
-        try:
-            response = await self.client.chat.completions.create(
-                model=config.NARRATOR_MODEL,
-                messages=[
-                    {"role": "system", "content": prompt},
-                    {"role": "user", "content": user_msg},
-                ],
-                temperature=0.8,
-                max_tokens=300,
-            )
+        request_kwargs = {
+            "model": config.NARRATOR_MODEL,
+            "messages": [
+                {"role": "system", "content": prompt},
+                {"role": "user", "content": user_msg},
+            ],
+            "temperature": 0.8,
+            "max_tokens": 300,
+        }
 
-            raw = response.choices[0].message.content.strip()
+        try:
+            try:
+                response = await self.client.chat.completions.create(
+                    **request_kwargs,
+                    response_format={"type": "json_object"},
+                )
+            except Exception as exc:
+                logger.warning(f"JSON-mode NPC dialogue request failed, retrying without JSON mode: {exc}")
+                response = await self.client.chat.completions.create(**request_kwargs)
+
+            raw = extract_message_text(response).strip()
             if "```" in raw:
                 raw = raw.split("```")[1].strip()
                 if raw.startswith("json"):
                     raw = raw[4:].strip()
 
+            if not raw:
+                raise ValueError("No NPC dialogue text returned by model")
+
             result = json.loads(raw)
             logger.debug(f"NPC dialogue for {npc.personality.name}: {result.get('dialogue', '')[:60]}...")
             return result
-
         except Exception as e:
             logger.error(f"NPC dialogue generation failed: {e}")
             return {
@@ -156,22 +168,34 @@ For each NPC, respond with JSON array:
 
 Keep names and roles varied. Make them memorable."""
 
-        try:
-            response = await self.client.chat.completions.create(
-                model=config.INTENT_MODEL,
-                messages=[
-                    {"role": "system", "content": "You create compelling RPG NPCs. Output valid JSON only."},
-                    {"role": "user", "content": prompt},
-                ],
-                temperature=0.9,
-                max_tokens=500,
-            )
+        request_kwargs = {
+            "model": config.INTENT_MODEL,
+            "messages": [
+                {"role": "system", "content": "You create compelling RPG NPCs. Output valid JSON only."},
+                {"role": "user", "content": prompt},
+            ],
+            "temperature": 0.9,
+            "max_tokens": 500,
+        }
 
-            raw = response.choices[0].message.content.strip()
+        try:
+            try:
+                response = await self.client.chat.completions.create(
+                    **request_kwargs,
+                    response_format={"type": "json_object"},
+                )
+            except Exception as exc:
+                logger.warning(f"JSON-mode NPC generation request failed, retrying without JSON mode: {exc}")
+                response = await self.client.chat.completions.create(**request_kwargs)
+
+            raw = extract_message_text(response).strip()
             if "```" in raw:
                 raw = raw.split("```")[1].strip()
                 if raw.startswith("json"):
                     raw = raw[4:].strip()
+
+            if not raw:
+                raise ValueError("No NPC list text returned by model")
 
             npcs_data = json.loads(raw)
             npcs = []
@@ -190,10 +214,8 @@ Keep names and roles varied. Make them memorable."""
 
             logger.info(f"Generated {len(npcs)} campaign NPCs")
             return npcs
-
         except Exception as e:
             logger.error(f"NPC generation failed: {e}")
-            # Return a single default NPC
             return [self.create_npc("npc_0", NPCPersonality(
                 name="Mysterious Stranger",
                 role="wanderer",

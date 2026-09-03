@@ -7,7 +7,7 @@ import config
 
 logger = logging.getLogger(__name__)
 
-EMBEDDING_MODEL = "nvidia/nv-embedqa-e5-v5"
+EMBEDDING_MODEL = config.EMBEDDING_MODEL
 EMBEDDING_DIMENSIONS = 1024
 
 
@@ -17,7 +17,7 @@ class EmbeddingGenerator:
     def __init__(self):
         self.client = AsyncOpenAI(
             base_url=config.NVIDIA_BASE_URL,
-            api_key=config.NVIDIA_API_KEY,
+            api_key=config.EMBEDDING_API_KEY,
         )
 
     async def embed_query(self, text: str) -> list[float]:
