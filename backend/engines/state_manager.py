@@ -89,11 +89,9 @@ class StateManager:
         player.hp = max(0, min(player.max_hp, player.hp + state_changes.hp_delta))
 
         # --- Mana changes ---
+        # Resource costs are expressed in state_changes.mana_delta by the caller;
+        # do not subtract intent.resource_cost again here.
         player.mana = max(0, min(player.max_mana, player.mana + state_changes.mana_delta))
-
-        # Consume mana if action uses resource
-        if intent.uses_resource and intent.resource_cost > 0:
-            player.mana = max(0, player.mana - intent.resource_cost)
 
         # --- Items used ---
         for item_name in state_changes.items_used:

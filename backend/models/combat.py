@@ -190,6 +190,7 @@ class CombatLogEntry(BaseModel):
 
 class CombatState(BaseModel):
     combat_id: str = ""
+    enemy_key: str = ""  # ENEMY_TEMPLATES key — server-side source of truth for rewards
     enemies: list[Combatant] = []
     player: Combatant | None = None
     turn_number: int = 0

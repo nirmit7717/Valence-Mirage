@@ -22,6 +22,7 @@ from models.game_state import GameSession, Turn, Item
 from models.outcome import Outcome, StateChanges, ProbabilityScore, ScoreBreakdown
 from models.combat import CombatState, CombatAction, CombatActionType
 from database import Database
+from data.items import item_from_definition
 from rag import RuleRetriever, VectorStore
 import config
 
@@ -286,14 +287,9 @@ async def create_session(req: NewSessionRequest = NewSessionRequest(), authoriza
     session.player.max_mana += class_stats["mana_bonus"]
     session.player.mana = session.player.max_mana
 
-    # Starting equipment
-    from models.game_state import Item
+    # Starting equipment (normalized so armor/damage bonuses and potion effects apply)
     for gear in CLASS_STARTING_GEAR.get(cls, []):
-        session.player.inventory.append(Item(
-            name=gear["name"],
-            item_type=gear["type"],
-            description=f"Starting gear for {cls.value}",
-        ))
+        session.player.inventory.append(item_from_definition(gear, f"Starting gear for {cls.value}"))
 
     # Store abilities in world_state for combat use
     abilities = CLASS_ABILITIES.get(cls, [])
@@ -537,59 +533,36 @@ async def submit_action(session_id: str, req: ActionRequest):
     # ── Combat Mode Guard ──
     # If combat is active, do NOT process as narrative.
     # Return current combat state so frontend shows combat UI.
-    active_combat = session.world_state.get("combat")
-    if active_combat and not active_combat.get("resolved", False):
-        combat_engine_local: CombatEngine = app.state.combat_engine
-        enemies = active_combat.get("enemies", [])
-        enemy = enemies[0] if enemies else None
-        if enemy:
-            player_armor = combat_engine_local._calc_player_armor(session.player)
-            attack_bonus = combat_engine_local._calc_attack_bonus(session.player)
-            return ActionResponse(
-                turn_number=session.turn_number,
-                intent=ActionIntent(action="combat", action_type="attack", description="Combat in progress", relevant_stat="strength", risk="high", requires_roll=True),
-                requires_roll=True,
-                outcome="combat_active",
-                narration=f"Combat continues! {enemy['name']} stands before you with {enemy['hp']}/{enemy['max_hp']} HP.",
-                state_changes=StateChanges(),
-                hp_change=0,
-                mana_change=0,
-                xp_change=0,
-                player_hp=session.player.hp,
-                player_mana=session.player.mana,
-                player_xp=session.player.xp,
-                player_xp_to_next=session.player.xp_to_next,
-                player_level=session.player.level,
-                max_hp=session.player.max_hp,
-                max_mana=session.player.max_mana,
-                choices=["Attack", "Use Ability", "Defend"],
-                combat_started=True,
-                combat_data={
-                    "combat_id": active_combat.get("combat_id", ""),
-                    "enemy": {"name": enemy["name"], "hp": enemy["hp"], "max_hp": enemy["max_hp"],
-                              "armor": enemy.get("armor", 0), "attack_bonus": enemy.get("attack_bonus", 0),
-                              "abilities": enemy.get("abilities", [])},
-                    "player": {"name": session.player.name, "hp": session.player.hp, "max_hp": session.player.max_hp,
-                               "mana": session.player.mana, "max_mana": session.player.max_mana,
-                               "armor": player_armor, "attack_bonus": attack_bonus, "status_effects": []},
-                    "abilities": session.world_state.get("abilities", []),
-                    "inventory": [{"name": i.name, "type": i.item_type, "hp_restore": getattr(i, "hp_restore", 0), "mana_restore": getattr(i, "mana_restore", 0)} for i in session.player.inventory],
-                    "enemy_tier": enemy.get("tier", 1),
-                },
-                dice_debug=None,
-                warning_count=session.world_state.get("warning_count", 0),
-                warning_message=None,
-                game_over=False,
-                game_over_reason=None,
-                campaign_ended=False,
-                victory=False,
-                pending_outcome=None,  # combat_active handled directly by frontend
-                ui_context={"environment": "dungeon", "tone": "combat", "enemy_name": enemy.get("name")},
-            )
-        else:
-            # Combat data corrupt — clear it and continue as narrative
-            session.world_state.pop("combat", None)
-            logger.warning(f"Cleared corrupt combat state for session {session_id}")
+    active_combat = _get_active_combat(session)
+    if active_combat is not None:
+        enemy = active_combat.enemies[0]
+        return ActionResponse(
+            turn_number=session.turn_number,
+            intent=ActionIntent(action_type="attack", description="Combat in progress", relevant_stat="strength", risk="high", requires_roll=True),
+            requires_roll=True,
+            outcome="combat_active",
+            narration=f"Combat continues! {enemy.name} stands before you.",
+            state_changes=StateChanges(),
+            player_hp=session.player.hp,
+            player_mana=session.player.mana,
+            player_xp=session.player.xp,
+            player_xp_to_next=session.player.xp_to_next,
+            player_level=session.player.level,
+            max_hp=session.player.max_hp,
+            max_mana=session.player.max_mana,
+            choices=["Attack", "Use Ability", "Defend"],
+            combat_started=True,
+            combat_data=_build_combat_payload(session, active_combat),
+            dice_debug=None,
+            warning_count=session.world_state.get("warning_count", 0),
+            warning_message=None,
+            game_over=False,
+            game_over_reason=None,
+            campaign_ended=False,
+            victory=False,
+            pending_outcome=None,  # combat_active handled directly by frontend
+            ui_context={"environment": "dungeon", "tone": "combat", "enemy_name": enemy.name},
+        )
 
     campaign_objective = session.world_state.get("campaign_objective", "")
 
@@ -926,104 +899,24 @@ async def submit_action(session_id: str, req: ActionRequest):
 
         session.world_state["situation"] = narration
         session.turn_number += 1
-        level_up = sm.apply_changes(session, intent, StateChanges(), "narrative_choice")
+        no_roll_changes = (
+            StateChanges(mana_delta=-intent.resource_cost)
+            if intent.uses_resource and intent.resource_cost > 0
+            else StateChanges()
+        )
+        level_up = sm.apply_changes(session, intent, no_roll_changes, "narrative_choice")
 
-        # If pending_combat was flagged, extract enemy from narration
+        # If pending_combat was flagged, start combat with the enemy the narrator named
+        # (or a context-appropriate fallback).
         combat_started_no_roll = False
         combat_data_no_roll = None
         combat_source_no_roll = None
         if pending_combat and not session.world_state.get("combat"):
-            enemy_name, enemy_key = _extract_enemy_from_narration(narration, session.player.level)
+            enemy_key, combat_source_no_roll = _choose_enemy_key(session, narration)
             if enemy_key:
-                combat_engine_local: CombatEngine = app.state.combat_engine
-                enemy_tier = min(5, max(1, session.player.level))
-                combat = combat_engine_local.initiate_combat(
-                    player_state=session.player,
-                    narrative_context=narration[-200:],
-                    enemy_key=enemy_key,
-                    enemy_tier=enemy_tier,
-                )
-                session.world_state["combat"] = combat.model_dump()
-                session.world_state["last_enemy_name"] = enemy.name  # Track for consistency
+                combat_data_no_roll = _start_combat(session, enemy_key, narration, combat_source_no_roll)
                 combat_started_no_roll = True
-                enemy = combat.enemies[0]
-                player_armor = combat_engine_local._calc_player_armor(session.player)
-                attack_bonus = combat_engine_local._calc_attack_bonus(session.player)
-                combat_data_no_roll = {
-                    "combat_id": combat.combat_id,
-                    "enemy": {
-                        "name": enemy.name,
-                        "hp": enemy.hp,
-                        "max_hp": enemy.max_hp,
-                        "armor": enemy.armor,
-                        "attack_bonus": enemy.attack_bonus,
-                        "abilities": enemy.abilities,
-                    },
-                    "player": {
-                        "name": session.player.name,
-                        "hp": session.player.hp,
-                        "max_hp": session.player.max_hp,
-                        "mana": session.player.mana,
-                        "max_mana": session.player.max_mana,
-                        "armor": player_armor,
-                        "attack_bonus": attack_bonus,
-                        "status_effects": [],
-                    },
-                    "abilities": session.world_state.get("abilities", []),
-                    "inventory": [{"name": i.name, "type": i.item_type, "hp_restore": getattr(i, "hp_restore", 0), "mana_restore": getattr(i, "mana_restore", 0)} for i in session.player.inventory],
-                    "enemy_tier": enemy_tier,
-                }
-                session.world_state["turns_since_combat"] = 0
-                session.world_state["combat_tension"] = 0
-                session.world_state["pending_combat"] = False
-                combat_source_no_roll = "narrator"
-                logger.info(f"Combat initiated from narration: {enemy_name} ({enemy_key})")
-            else:
-                logger.warning("pending_combat flagged but narrator didn't name a recognizable enemy — using fallback")
-                enemy_key = _fallback_enemy(session.world_state, session.player.level)[0]
-                if enemy_key:
-                    combat_engine_local = app.state.combat_engine
-                    enemy_tier = min(5, max(1, session.player.level))
-                    combat = combat_engine_local.initiate_combat(
-                        player_state=session.player,
-                        narrative_context=narration[-200:],
-                        enemy_key=enemy_key,
-                        enemy_tier=enemy_tier,
-                    )
-                    session.world_state["combat"] = combat.model_dump()
-                    session.world_state["last_enemy_name"] = enemy.name
-                    combat_started_no_roll = True
-                    enemy = combat.enemies[0]
-                    player_armor = combat_engine_local._calc_player_armor(session.player)
-                    attack_bonus = combat_engine_local._calc_attack_bonus(session.player)
-                    combat_data_no_roll = {
-                        "combat_id": combat.combat_id,
-                        "enemy": {
-                            "name": enemy.name,
-                            "hp": enemy.hp,
-                            "max_hp": enemy.max_hp,
-                            "armor": enemy.armor,
-                            "attack_bonus": enemy.attack_bonus,
-                            "abilities": enemy.abilities,
-                        },
-                        "player": {
-                            "name": session.player.name,
-                            "hp": session.player.hp,
-                            "max_hp": session.player.max_hp,
-                            "mana": session.player.mana,
-                            "max_mana": session.player.max_mana,
-                            "armor": player_armor,
-                            "attack_bonus": attack_bonus,
-                            "status_effects": [],
-                        },
-                        "abilities": session.world_state.get("abilities", []),
-                        "inventory": [{"name": i.name, "type": i.item_type, "hp_restore": getattr(i, "hp_restore", 0), "mana_restore": getattr(i, "mana_restore", 0)} for i in session.player.inventory],
-                        "enemy_tier": enemy_tier,
-                    }
-                    session.world_state["turns_since_combat"] = 0
-                    session.world_state["combat_tension"] = 0
-                    combat_source_no_roll = "fallback"
-                session.world_state["pending_combat"] = False
+            session.world_state["pending_combat"] = False
 
         if campaign_data:
             bp = CampaignBlueprint(**campaign_data)
@@ -1056,7 +949,7 @@ async def submit_action(session_id: str, req: ActionRequest):
                 roll=0,
                 threshold=0,
                 narration=narration,
-                state_changes=StateChanges(),
+                state_changes=no_roll_changes,
             ),
         )
         session.turn_history.append(turn)
@@ -1069,7 +962,7 @@ async def submit_action(session_id: str, req: ActionRequest):
             requires_roll=False,
             outcome="narrative_choice",
             narration=clean_narration(narration),
-            state_changes=StateChanges(),
+            state_changes=no_roll_changes,
             player_hp=session.player.hp,
             player_mana=session.player.mana,
             player_level=session.player.level,
@@ -1225,101 +1118,15 @@ async def submit_action(session_id: str, req: ActionRequest):
         if beat:
             if beat.type == "combat":
                 # Beat requires combat — narrator already introduced it via pending_combat flag.
-                # Extract enemy name from the narration and create combat_data.
+                # Start combat with the enemy the narrator named, or a contextual fallback.
                 if not session.world_state.get("combat"):
-                    enemy_name, enemy_key = _extract_enemy_from_narration(narration, session.player.level)
+                    enemy_key, enemy_source = _choose_enemy_key(session, narration)
                     if enemy_key:
-                        combat_engine_local: CombatEngine = app.state.combat_engine
-                        enemy_tier = min(5, max(1, session.player.level))
-                        combat = combat_engine_local.initiate_combat(
-                            player_state=session.player,
-                            narrative_context=narration[-200:],
-                            enemy_key=enemy_key,
-                            enemy_tier=enemy_tier,
-                        )
-                        session.world_state["combat"] = combat.model_dump()
+                        combat_source = "beat" if enemy_source == "narrator" else enemy_source
+                        combat_data = _start_combat(session, enemy_key, narration, combat_source)
                         combat_started = True
                         combat_beat_available = True
-                        enemy = combat.enemies[0]
-                        session.world_state["last_enemy_name"] = enemy.name
-                        player_armor = combat_engine_local._calc_player_armor(session.player)
-                        attack_bonus = combat_engine_local._calc_attack_bonus(session.player)
-                        combat_data = {
-                            "combat_id": combat.combat_id,
-                            "enemy": {
-                                "name": enemy.name,
-                                "hp": enemy.hp,
-                                "max_hp": enemy.max_hp,
-                                "armor": enemy.armor,
-                                "attack_bonus": enemy.attack_bonus,
-                                "abilities": enemy.abilities,
-                            },
-                            "player": {
-                                "name": session.player.name,
-                                "hp": session.player.hp,
-                                "max_hp": session.player.max_hp,
-                                "mana": session.player.mana,
-                                "max_mana": session.player.max_mana,
-                                "armor": player_armor,
-                                "attack_bonus": attack_bonus,
-                                "status_effects": [],
-                            },
-                            "abilities": session.world_state.get("abilities", []),
-                            "inventory": [{"name": i.name, "type": i.item_type, "hp_restore": getattr(i, "hp_restore", 0), "mana_restore": getattr(i, "mana_restore", 0)} for i in session.player.inventory],
-                            "enemy_tier": enemy_tier,
-                        }
-                        session.world_state["turns_since_combat"] = 0
-                        session.world_state["combat_tension"] = 0
-                        session.world_state["pending_combat"] = False
-                        combat_source = "beat"
                     else:
-                        # Narrator didn't name a recognizable enemy — use fallback
-                        logger.info("Beat type=combat but narrator didn't name enemy — using fallback")
-                        fb_key, fb_name = _fallback_enemy(session.world_state, session.player.level)
-                        if fb_key:
-                            combat_engine_local = app.state.combat_engine
-                            enemy_tier = min(5, max(1, session.player.level))
-                            combat = combat_engine_local.initiate_combat(
-                                player_state=session.player,
-                                narrative_context=narration[-200:],
-                                enemy_key=fb_key,
-                                enemy_tier=enemy_tier,
-                            )
-                            session.world_state["combat"] = combat.model_dump()
-                            combat_started = True
-                            combat_beat_available = True
-                            enemy = combat.enemies[0]
-                            session.world_state["last_enemy_name"] = enemy.name
-                            player_armor = combat_engine_local._calc_player_armor(session.player)
-                            attack_bonus = combat_engine_local._calc_attack_bonus(session.player)
-                            combat_data = {
-                                "combat_id": combat.combat_id,
-                                "enemy": {
-                                    "name": enemy.name,
-                                    "hp": enemy.hp,
-                                    "max_hp": enemy.max_hp,
-                                    "armor": enemy.armor,
-                                    "attack_bonus": enemy.attack_bonus,
-                                    "abilities": enemy.abilities,
-                                },
-                                "player": {
-                                    "name": session.player.name,
-                                    "hp": session.player.hp,
-                                    "max_hp": session.player.max_hp,
-                                    "mana": session.player.mana,
-                                    "max_mana": session.player.max_mana,
-                                    "armor": player_armor,
-                                    "attack_bonus": attack_bonus,
-                                    "status_effects": [],
-                                },
-                                "abilities": session.world_state.get("abilities", []),
-                                "inventory": [{"name": i.name, "type": i.item_type, "hp_restore": getattr(i, "hp_restore", 0), "mana_restore": getattr(i, "mana_restore", 0)} for i in session.player.inventory],
-                                "enemy_tier": enemy_tier,
-                            }
-                            session.world_state["turns_since_combat"] = 0
-                            session.world_state["combat_tension"] = 0
-                            combat_source = "fallback"
-                        else:
                             # Even fallback failed — advance beat
                             bp_adv = planner.advance_beat(bp)
                             if bp_adv.current_act == bp.current_act and bp_adv.current_beat == bp.current_beat and _is_campaign_complete(bp):
@@ -1343,97 +1150,11 @@ async def submit_action(session_id: str, req: ActionRequest):
 
                 # Handle pending_combat on a non-combat beat
                 if pending_combat and not combat_started and not session.world_state.get("combat"):
-                    enemy_name, enemy_key = _extract_enemy_from_narration(narration, session.player.level)
+                    enemy_key, combat_source = _choose_enemy_key(session, narration)
                     if enemy_key:
-                        combat_engine_local = app.state.combat_engine
-                        enemy_tier = min(5, max(1, session.player.level))
-                        combat = combat_engine_local.initiate_combat(
-                            player_state=session.player,
-                            narrative_context=narration[-200:],
-                            enemy_key=enemy_key,
-                            enemy_tier=enemy_tier,
-                        )
-                        session.world_state["combat"] = combat.model_dump()
+                        combat_data = _start_combat(session, enemy_key, narration, combat_source)
                         combat_started = True
-                        enemy = combat.enemies[0]
-                        session.world_state["last_enemy_name"] = enemy.name
-                        player_armor = combat_engine_local._calc_player_armor(session.player)
-                        attack_bonus = combat_engine_local._calc_attack_bonus(session.player)
-                        combat_data = {
-                            "combat_id": combat.combat_id,
-                            "enemy": {
-                                "name": enemy.name,
-                                "hp": enemy.hp,
-                                "max_hp": enemy.max_hp,
-                                "armor": enemy.armor,
-                                "attack_bonus": enemy.attack_bonus,
-                                "abilities": enemy.abilities,
-                            },
-                            "player": {
-                                "name": session.player.name,
-                                "hp": session.player.hp,
-                                "max_hp": session.player.max_hp,
-                                "mana": session.player.mana,
-                                "max_mana": session.player.max_mana,
-                                "armor": player_armor,
-                                "attack_bonus": attack_bonus,
-                                "status_effects": [],
-                            },
-                            "abilities": session.world_state.get("abilities", []),
-                            "inventory": [{"name": i.name, "type": i.item_type, "hp_restore": getattr(i, "hp_restore", 0), "mana_restore": getattr(i, "mana_restore", 0)} for i in session.player.inventory],
-                            "enemy_tier": enemy_tier,
-                        }
-                        session.world_state["turns_since_combat"] = 0
-                        session.world_state["combat_tension"] = 0
-                        session.world_state["pending_combat"] = False
-                        combat_source = "narrator"
-                        logger.info(f"Combat initiated from narration (roll path): {enemy_name} ({enemy_key})")
-                    else:
-                        logger.warning("pending_combat flagged but narrator didn't name enemy (roll path) — using fallback")
-                        fb_key, fb_name = _fallback_enemy(session.world_state, session.player.level)
-                        if fb_key:
-                            combat_engine_local_fb = app.state.combat_engine
-                            enemy_tier = min(5, max(1, session.player.level))
-                            combat = combat_engine_local_fb.initiate_combat(
-                                player_state=session.player,
-                                narrative_context=narration[-200:],
-                                enemy_key=fb_key,
-                                enemy_tier=enemy_tier,
-                            )
-                            session.world_state["combat"] = combat.model_dump()
-                            session.world_state["last_enemy_name"] = enemy.name
-                            combat_started = True
-                            enemy = combat.enemies[0]
-                            player_armor = combat_engine_local_fb._calc_player_armor(session.player)
-                            attack_bonus = combat_engine_local_fb._calc_attack_bonus(session.player)
-                            combat_data = {
-                                "combat_id": combat.combat_id,
-                                "enemy": {
-                                    "name": enemy.name,
-                                    "hp": enemy.hp,
-                                    "max_hp": enemy.max_hp,
-                                    "armor": enemy.armor,
-                                    "attack_bonus": enemy.attack_bonus,
-                                    "abilities": enemy.abilities,
-                                },
-                                "player": {
-                                    "name": session.player.name,
-                                    "hp": session.player.hp,
-                                    "max_hp": session.player.max_hp,
-                                    "mana": session.player.mana,
-                                    "max_mana": session.player.max_mana,
-                                    "armor": player_armor,
-                                    "attack_bonus": attack_bonus,
-                                    "status_effects": [],
-                                },
-                                "abilities": session.world_state.get("abilities", []),
-                                "inventory": [{"name": i.name, "type": i.item_type, "hp_restore": getattr(i, "hp_restore", 0), "mana_restore": getattr(i, "mana_restore", 0)} for i in session.player.inventory],
-                                "enemy_tier": enemy_tier,
-                            }
-                            session.world_state["turns_since_combat"] = 0
-                            session.world_state["combat_tension"] = 0
-                            combat_source = "fallback"
-                        session.world_state["pending_combat"] = False
+                    session.world_state["pending_combat"] = False
         
         if beat:
             current_beat_title = beat.title
@@ -1456,7 +1177,8 @@ async def submit_action(session_id: str, req: ActionRequest):
 
     # 12b. Engagement tracking
     tracker: EngagementTracker = app.state.engagement_tracker
-    mana_delta = max(0, state_changes.mana_change) if state_changes and state_changes.mana_change else 0
+    # Mana spent is the action's cost; crit-success refunds are a reward, not negative spend.
+    mana_spent = intent.resource_cost if intent.uses_resource and intent.resource_cost > 0 else 0
     tracker.record_turn(
         session_id=session_id,
         turn_number=session.turn_number,
@@ -1465,7 +1187,7 @@ async def submit_action(session_id: str, req: ActionRequest):
         dice_result=str(outcome_result) if outcome_result else "",
         combat_action=combat_started,
         npc_interaction=npc_dialogue is not None,
-        mana_spent=abs(mana_delta),
+        mana_spent=mana_spent,
         items_used=0,  # Item tracking is implicit via state changes
     )
 
@@ -1629,14 +1351,7 @@ async def resolve_combat(session_id: str, req: CombatResolveRequest):
             rewards["xp"] = template.xp_reward
             loot = roll_loot(template)
             for entry in loot:
-                item = Item(
-                    name=entry["name"],
-                    item_type=entry.get("type", "misc"),
-                    description=f"Looted from {req.enemy_name}",
-                    stat_bonus=entry.get("stat_bonus", {}),
-                    hp_restore=entry.get("hp_restore", 0),
-                    mana_restore=entry.get("mana_restore", 0),
-                )
+                item = item_from_definition(entry, f"Looted from {req.enemy_name}")
                 rewards["items"].append(item)
                 rewards["loot_descriptions"].append(f"Found: {entry['name']}")
             session.player.inventory.extend(rewards["items"])
@@ -2068,6 +1783,93 @@ def _fallback_enemy(world_state: dict, player_level: int) -> tuple[str, str]:
 
     # Nuclear fallback
     return "bandit_thug", ENEMY_TEMPLATES["bandit_thug"].name
+
+
+def _get_active_combat(session) -> CombatState | None:
+    """Return the session's active combat, or None. Clears unusable combat data."""
+    raw = session.world_state.get("combat")
+    if not raw or raw.get("resolved", False):
+        return None
+    try:
+        combat = CombatState(**raw)
+    except Exception as exc:
+        logger.warning(f"Cleared unreadable combat state for session {session.session_id}: {exc}")
+        session.world_state.pop("combat", None)
+        return None
+    if not combat.enemies or combat.status != "active":
+        logger.warning(f"Cleared corrupt combat state for session {session.session_id}")
+        session.world_state.pop("combat", None)
+        return None
+    return combat
+
+
+def _build_combat_payload(session, combat: CombatState) -> dict:
+    """Everything the browser needs to run an encounter. Single source for every combat response."""
+    from data.enemies import ENEMY_TEMPLATES
+
+    combat_engine: CombatEngine = app.state.combat_engine
+    enemy = combat.enemies[0]
+    template = ENEMY_TEMPLATES.get(combat.enemy_key) or next(
+        (t for t in ENEMY_TEMPLATES.values() if t.name == enemy.name), None
+    )
+    player = session.player
+    return {
+        "combat_id": combat.combat_id,
+        "enemy": {
+            "name": enemy.name,
+            "hp": enemy.hp,
+            "max_hp": enemy.max_hp,
+            "armor": enemy.armor,
+            "attack_bonus": enemy.attack_bonus,
+            "abilities": enemy.abilities,
+        },
+        "player": {
+            "name": player.name,
+            "hp": player.hp,
+            "max_hp": player.max_hp,
+            "mana": player.mana,
+            "max_mana": player.max_mana,
+            "armor": combat_engine._calc_player_armor(player),
+            "attack_bonus": combat_engine._calc_attack_bonus(player),
+            "status_effects": [],
+        },
+        "abilities": session.world_state.get("abilities", []),
+        "inventory": [
+            {"name": i.name, "type": i.item_type, "hp_restore": i.hp_restore, "mana_restore": i.mana_restore}
+            for i in player.inventory
+        ],
+        "enemy_tier": template.tier if template else 1,
+    }
+
+
+def _choose_enemy_key(session, narration: str) -> tuple[str | None, str]:
+    """Pick the enemy the narrator named, else a context-appropriate fallback. Returns (key, source)."""
+    _, enemy_key = _extract_enemy_from_narration(narration, session.player.level)
+    if enemy_key:
+        return enemy_key, "narrator"
+    logger.info("Narrator didn't name a recognizable enemy — using contextual fallback")
+    fallback_key, _ = _fallback_enemy(session.world_state, session.player.level)
+    return fallback_key, "fallback"
+
+
+def _start_combat(session, enemy_key: str, narration: str, source: str) -> dict:
+    """Create the encounter, record it on the session, and return the client payload."""
+    combat_engine: CombatEngine = app.state.combat_engine
+    combat = combat_engine.initiate_combat(
+        player_state=session.player,
+        narrative_context=narration[-200:],
+        enemy_key=enemy_key,
+        enemy_tier=min(5, max(1, session.player.level)),
+    )
+    enemy = combat.enemies[0]
+    world = session.world_state
+    world["combat"] = combat.model_dump()
+    world["last_enemy_name"] = enemy.name
+    world["turns_since_combat"] = 0
+    world["combat_tension"] = 0
+    world["pending_combat"] = False
+    logger.info(f"Combat started ({source}): {enemy.name} [{combat.enemy_key}] combat_id={combat.combat_id}")
+    return _build_combat_payload(session, combat)
 
 
 def _check_player_death(session) -> tuple[bool, str]:

@@ -8,7 +8,7 @@ from models.combat import (
     CombatLogEntry, StatusEffect, get_effect_rule,
 )
 from data.enemies import get_random_enemy, roll_loot, roll_damage, ENEMY_TEMPLATES
-from models.game_state import Item
+from data.items import item_from_definition
 
 logger = logging.getLogger(__name__)
 
@@ -33,6 +33,7 @@ class CombatEngine:
             template = ENEMY_TEMPLATES[enemy_key]
         else:
             template = get_random_enemy(enemy_tier, self.rng)
+            enemy_key = next(key for key, value in ENEMY_TEMPLATES.items() if value is template)
 
         # Build player combatant from PlayerState
         player = Combatant(
@@ -59,6 +60,7 @@ class CombatEngine:
 
         return CombatState(
             combat_id=str(uuid.uuid4()),
+            enemy_key=enemy_key,
             enemies=[enemy],
             player=player,
             turn_number=1,
@@ -309,15 +311,7 @@ class CombatEngine:
                 total_xp += template.xp_reward
                 loot = roll_loot(template, self.rng)
                 for entry in loot:
-                    item = Item(
-                        name=entry["name"],
-                        item_type=entry.get("type", "misc"),
-                        description=f"Looted from {enemy.name}",
-                        stat_bonus=entry.get("stat_bonus", {}),
-                        hp_restore=entry.get("hp_restore", 0),
-                        mana_restore=entry.get("mana_restore", 0),
-                    )
-                    items.append(item)
+                    items.append(item_from_definition(entry, f"Looted from {enemy.name}"))
                     descriptions.append(f"Found: {entry['name']}")
 
         return {"xp": total_xp, "items": items, "loot_descriptions": descriptions}
