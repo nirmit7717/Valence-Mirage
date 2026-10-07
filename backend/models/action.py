@@ -52,3 +52,7 @@ class ActionIntent(BaseModel):
         default_factory=list,
         description="If this is a choice moment, list the options. Empty if free-form.",
     )
+    relevance: str = Field(
+        default="relevant",
+        description="Fit with the current scene and setting: relevant, tangential, or off_topic",
+    )

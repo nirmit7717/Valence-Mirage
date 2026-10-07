@@ -136,6 +136,16 @@ export function tickEffects(combatant, addLog) {
   }
 }
 
+// Deep copy of a combat state. Turns are resolved on a copy and only committed to
+// React state after their dice animation lands, so HP never changes mid-roll.
+export function cloneCombatState(state) {
+  return structuredClone(state);
+}
+
+export function enemyIntro(name) {
+  return `⚔️ ${(name || 'An enemy').trim()} appears!`;
+}
+
 export function createCombatState(combatData) {
   return {
     enemy: { ...combatData.enemy, status_effects: [] },

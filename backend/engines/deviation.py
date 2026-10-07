@@ -19,6 +19,22 @@ MAJOR_DEVIATION = "major"          # Clearly off-track
 SLIGHT_THRESHOLD = 0.15   # alignment below this → slight deviation
 MAJOR_THRESHOLD = -0.1    # alignment below this → major deviation
 
+# Talking to the game instead of playing it — off-topic in every setting.
+META_PHRASES = (
+    "chatgpt", "openai", "as an ai", "you are an ai", "language model", "ignore previous",
+    "ignore all previous", "system prompt", "game master", "the narrator", "this game", "the developer",
+    "real world", "real life", "quit the game", "end the game", "save the game", "log out",
+)
+# Modern, real-world things — off-topic only in settings without them (fantasy).
+MODERN_PHRASES = (
+    "phone", "smartphone", "cellphone", "text message", "netflix", "movie", "youtube", "reddit",
+    "twitter", "instagram", "tiktok", "facebook", "social media", "pizza", "income tax", "taxes",
+    "alarm clock", "grocery store", "supermarket", "coffee shop", "starbucks", "mcdonald", "uber", "lyft",
+    "videogame", "video game", "playstation", "xbox", "remote control", "microwave", "refrigerator",
+    "laptop", "computer", "email", "internet", "wifi", "wi-fi", "selfie", "television", "airplane",
+    "netflix", "spotify", "credit card", "bank account", "office job", "homework",
+)
+
 
 def evaluate_alignment(
     action: str,
@@ -28,6 +44,7 @@ def evaluate_alignment(
     location: str,
     npc_names: list[str] | None = None,
     turn_history: list | None = None,
+    setting_genre: str = "fantasy",
 ) -> tuple[str, float]:
     """Evaluate how well a player action aligns with the campaign.
 
@@ -145,15 +162,15 @@ def evaluate_alignment(
     elif not connection_found:
         score -= 0.2  # Even with a small positive score, lack of connection is penalized
 
-    # Off-topic phrase detection — override always_valid for clearly modern/real-world actions
-    off_topic_phrases = [
-        "phone", "text message", "netflix", "movie", "youtube", "reddit", "twitter",
-        "instagram", "social media", "pizza delivery", "income tax", "taxes",
-        "alarm clock", "grocery store", "coffee shop", "uber", "lyft",
-        "videogame", "video game", "remote control", "microwave", "refrigerator",
-    ]
-    if any(phrase in action_lower for phrase in off_topic_phrases):
-        score = min(score, -0.2)  # Force negative regardless of verb matches
+    # Off-topic phrase detection — overrides verb matches for actions that break the fiction.
+    # Modern-world items are only off-topic in settings that don't have them.
+    off_topic_hit = any(re.search(rf"\b{re.escape(p)}", action_lower) for p in META_PHRASES)
+    if setting_genre == "fantasy":
+        off_topic_hit = off_topic_hit or any(
+            re.search(rf"\b{re.escape(p)}", action_lower) for p in MODERN_PHRASES
+        )
+    if off_topic_hit:
+        score = min(score, -0.4)  # Force major regardless of verb matches
 
     # Clamp
     score = max(-1.0, min(1.0, score))
@@ -168,15 +185,10 @@ def evaluate_alignment(
     else:
         classification = MAJOR_DEVIATION
 
-    # False positive check: if STRONG connection exists, never classify as major
-    # A single weak overlap shouldn't prevent major classification for truly off-track actions
-    if classification == MAJOR_DEVIATION and score >= -0.1:
-        classification = SLIGHT_DEVIATION
-
-    # Common verbs alone don't prevent major classification
-    # Only prevent if the action has SPECIFIC game verbs (attack, cast, etc.)
-    game_verbs = {"attack", "fight", "defend", "cast", "heal", "use", "equip", "drink", "think", "try", "wait"}
-    if classification == MAJOR_DEVIATION and (tokens & game_verbs):
+    # Game verbs soften a disconnected action to "slight" — but never rescue an action
+    # that breaks the fiction ("I try to order pizza on my phone" stays major).
+    game_verbs = {"attack", "fight", "defend", "cast", "heal", "equip", "drink"}
+    if classification == MAJOR_DEVIATION and not off_topic_hit and (tokens & game_verbs):
         classification = SLIGHT_DEVIATION
 
     return classification, score

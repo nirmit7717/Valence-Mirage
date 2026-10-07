@@ -190,7 +190,12 @@ class CombatLogEntry(BaseModel):
 
 class CombatState(BaseModel):
     combat_id: str = ""
-    enemy_key: str = ""  # ENEMY_TEMPLATES key — server-side source of truth for rewards
+    enemy_key: str = ""  # ENEMY_TEMPLATES key when a hand-built template was used ("" for generated enemies)
+    # Server-side source of truth for the encounter (rewards never come from the client).
+    enemy_tier: int = 0
+    xp_reward: int = 0
+    loot_table: list[dict] = []
+    enemy_profile: dict = {}  # archetype, threat, source, description
     enemies: list[Combatant] = []
     player: Combatant | None = None
     turn_number: int = 0

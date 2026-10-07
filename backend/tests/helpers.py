@@ -77,6 +77,18 @@ class FakeRuleRetriever:
         return ""
 
 
+class FakeEnemyDesigner:
+    """Stands in for the LLM enemy reader. Returns `spec` (None = fall through to heuristics)."""
+
+    def __init__(self):
+        self.spec = None
+        self.calls: list[dict] = []
+
+    async def describe(self, *, narration, world_state, threat_hint=None):
+        self.calls.append({"narration": narration, "threat_hint": threat_hint})
+        return self.spec
+
+
 class FakeNPCEngine:
     async def generate_dialogue(self, npc, player_action, player_name="Adventurer") -> dict:
         return {"dialogue": "...", "disposition_change": 0.0, "trust_change": 0.0, "wants_to_fight": False}

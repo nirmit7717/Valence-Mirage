@@ -80,14 +80,16 @@ export default function NarrativeCard({ narration, onChoice, onDismiss, animatio
       }
       tts.speak(chunks[nextIdx]);
     } else {
-      // Last chunk — always show full text and show options/dismiss
+      // Last chunk — always show full text, then either hand off to the pending
+      // outcome (victory / game over / combat) or show the player's options.
       cancel();
       setDisplayedText(chunks[chunkIndex] || '');
       setIsTyping(false);
-      if (narration?.choices?.length > 0) {
-        setShowActions(true);
-      } else {
+      if (narration?.pendingOutcome || narration?.combatData) {
         onDismiss?.();
+      } else {
+        // Always offer an input — even with no suggested choices — so play never stalls.
+        setShowActions(true);
       }
     }
   }, [chunkIndex, chunks, narration, animationsEnabled, typewriterRender, cancel, onDismiss]);
@@ -156,7 +158,7 @@ export default function NarrativeCard({ narration, onChoice, onDismiss, animatio
 
           {!showChoices && (
             <button className="nc-continue-btn" onClick={(e) => { e.stopPropagation(); handleContinue(); }}>
-              {isLastChunk && narration?.pendingOutcome ? (narration.pendingOutcome.type === 'combat_start' ? '⚔️ Enter Combat ▸' : narration.pendingOutcome.type === 'game_over' ? 'Continue ▸' : narration.pendingOutcome.type === 'victory' ? '🏆 Continue ▸' : 'Continue ▸') : isLastChunk && narration?.choices?.length ? 'See Options ▸' : 'Continue ▸'}
+              {isLastChunk && narration?.pendingOutcome ? (narration.pendingOutcome.type === 'combat_start' ? '⚔️ Enter Combat ▸' : narration.pendingOutcome.type === 'game_over' ? 'Continue ▸' : narration.pendingOutcome.type === 'victory' ? '🏆 Continue ▸' : 'Continue ▸') : isLastChunk && narration?.choices?.length ? 'See Options ▸' : isLastChunk ? 'Your Move ▸' : 'Continue ▸'}
             </button>
           )}
         </div>

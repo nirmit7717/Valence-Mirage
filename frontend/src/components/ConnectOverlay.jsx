@@ -1,5 +1,4 @@
 import { useState } from 'react';
-import { useNavigate } from 'react-router-dom';
 import { CLASS_DATA } from '../data/classes';
 
 const SIZES = [
@@ -9,13 +8,11 @@ const SIZES = [
 ];
 
 export default function ConnectOverlay({ onStart, onCancel }) {
-  const navigate = useNavigate();
   const [name, setName] = useState('Adventurer');
   const [cls, setCls] = useState('warrior');
   const [size, setSize] = useState('medium');
   const [keywords, setKeywords] = useState('');
   const [loading, setLoading] = useState(false);
-  const [step, setStep] = useState(0); // 0 = class select, 1 = details
 
   const selected = CLASS_DATA[cls];
 
@@ -36,13 +33,17 @@ export default function ConnectOverlay({ onStart, onCancel }) {
         <p className="connect-subtitle">Choose your fate, adventurer</p>
 
         {/* Class selection grid */}
-        <div className="class-grid">
+        <div className="class-grid" role="radiogroup" aria-label="Character class">
           {Object.entries(CLASS_DATA).map(([key, data]) => (
             <div
               key={key}
+              role="radio"
+              aria-checked={cls === key}
+              tabIndex={0}
               className={`class-card ${cls === key ? 'class-card-active' : ''}`}
               style={{ '--class-accent': data.accent }}
               onClick={() => setCls(key)}
+              onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setCls(key); } }}
             >
               <div className="class-card-emoji">{data.emoji}</div>
               <div className="class-card-name">{data.name}</div>
@@ -55,7 +56,6 @@ export default function ConnectOverlay({ onStart, onCancel }) {
         <div className="connect-class-detail" style={{ '--class-accent': selected.accent }}>
           <div className="connect-detail-header">
             <span>{selected.emoji} {selected.name}</span>
-            <button className="vm-link" onClick={() => navigate(`/roles/${cls}`)}>Full Details →</button>
           </div>
           <p className="connect-detail-desc">{selected.playstyle}</p>
           <div className="connect-detail-stats">
@@ -72,23 +72,28 @@ export default function ConnectOverlay({ onStart, onCancel }) {
         {/* Name + Keywords */}
         <div className="connect-fields">
           <input type="text" placeholder="Character name..." maxLength={50} value={name}
-            onChange={e => setName(e.target.value)} className="connect-input" />
+            onChange={e => setName(e.target.value)} className="connect-input" aria-label="Character name" />
 
           {/* Campaign size */}
-          <div className="size-selector">
-            {SIZES.map(s => (
-              <button key={s.value} className={`size-btn ${size === s.value ? 'size-btn-active' : ''}`}
-                onClick={() => setSize(s.value)}>
-                <span className="size-emoji">{s.emoji}</span>
-                <span className="size-label">{s.label}</span>
-                <span className="size-desc">{s.desc}</span>
-              </button>
-            ))}
+          <div className="size-selector" role="radiogroup" aria-label="Campaign length">
+            {SIZES.map(s => {
+              const active = size === s.value;
+              return (
+                <button key={s.value} type="button" role="radio" aria-checked={active}
+                  className={`size-btn ${active ? 'size-btn-active' : ''}`}
+                  onClick={() => setSize(s.value)}>
+                  {active && <span className="size-check" aria-hidden="true">✓</span>}
+                  <span className="size-emoji">{s.emoji}</span>
+                  <span className="size-label">{s.label}</span>
+                  <span className="size-desc">{s.desc}</span>
+                </button>
+              );
+            })}
           </div>
 
           <input type="text" placeholder="Adventure keywords (e.g. haunted castle undead siege)..."
             maxLength={200} value={keywords} onChange={e => setKeywords(e.target.value)}
-            className="connect-input connect-input-sm" />
+            className="connect-input connect-input-sm" aria-label="Adventure keywords" />
         </div>
 
         <button className="connect-start-btn" onClick={handleStart} disabled={loading}

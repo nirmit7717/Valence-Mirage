@@ -44,7 +44,7 @@ export default function CampaignDetailPage() {
   const clsData = CLASS_DATA[cls];
   const turnCount = session?.turn_number || turns.length;
   const ended = ws.campaign_ended;
-  const isVictory = ws.victory;
+  const isVictory = ws.campaign_result ? ws.campaign_result === 'victory' : ws.status !== 'failed';
 
   // Extract unique enemies from turn history
   const enemies = [...new Set(

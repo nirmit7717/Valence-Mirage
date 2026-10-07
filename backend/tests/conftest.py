@@ -20,7 +20,14 @@ from engines.dice import DiceEngine
 from engines.engagement_tracker import EngagementTracker
 from engines.probability import ProbabilityEngine
 from engines.state_manager import StateManager
-from helpers import FakeIntentParser, FakeNarrator, FakeNPCEngine, FakeRuleRetriever, make_planner
+from helpers import (
+    FakeEnemyDesigner,
+    FakeIntentParser,
+    FakeNarrator,
+    FakeNPCEngine,
+    FakeRuleRetriever,
+    make_planner,
+)
 
 
 @asynccontextmanager
@@ -34,6 +41,7 @@ async def _test_lifespan(app):
     app.state.npc_engine = FakeNPCEngine()
     app.state.combat_engine = CombatEngine()
     app.state.engagement_tracker = EngagementTracker()
+    app.state.enemy_designer = FakeEnemyDesigner()
     app.state.vector_store = None
     app.state.rule_retriever = FakeRuleRetriever()
 

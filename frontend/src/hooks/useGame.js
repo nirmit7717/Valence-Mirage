@@ -7,6 +7,15 @@ import * as api from '../api';
 import { createCombatState } from '../utils/combat';
 import { getThemeFromCampaign } from '../utils/theme';
 
+// Pull "→ choice" lines out of narration text.
+function splitChoices(narration) {
+  const choices = [];
+  const text = (narration || '')
+    .replace(/^\s*(?:→|->)\s*(.+)$/gm, (_, choice) => { choices.push(choice.trim()); return ''; })
+    .trim();
+  return { text, choices };
+}
+
 export function useGame() {
   const [sessionId, setSessionId] = useState(null);
   const [sessionInfo, setSessionInfo] = useState(null);
@@ -32,6 +41,26 @@ export function useGame() {
 
   const removeMessage = useCallback((id) => {
     setMessages(prev => prev.filter(m => m.id !== id));
+  }, []);
+
+  // Show a notice in the narrative card (the chat log isn't rendered in the game view),
+  // keeping the previous choices so the player can try something else.
+  const showNotice = useCallback((text) => {
+    const safe = String(text || '').replace(/[<>&]/g, ch => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;' }[ch]));
+    setNarration(prev => ({
+      html: `<p class="nc-warning"><em>⚠ ${safe}</em></p>`,
+      meta: null,
+      choices: prev?.choices?.length ? prev.choices : null,
+      combatData: null,
+      pendingOutcome: null,
+    }));
+  }, []);
+
+  // Map a finished campaign's result onto the end-screen flags.
+  const applyCampaignEnd = useCallback((result) => {
+    if (result === 'victory') setVictory(true);
+    else if (result === 'defeat' || result === 'lost_focus') setGameOver(true);
+    setCampaignEnded(true);
   }, []);
 
   const startSession = useCallback(async ({ player_name, keywords, character_class, campaign_size }) => {
@@ -102,12 +131,13 @@ export function useGame() {
       const detectedTheme = getThemeFromCampaign(data.campaign);
       setTheme(detectedTheme);
 
+      // A finished campaign goes straight to its end screen (no story card to replay).
       if (data.campaign_ended) {
-        setCampaignEnded(true);
+        applyCampaignEnd(data.campaign_result);
       }
 
       const restoredNarrationText = data.opening_narration || data.situation || data.campaign?.premise || data.campaign?.title || '';
-      if (restoredNarrationText) {
+      if (restoredNarrationText && !data.campaign_ended) {
         const restoredChoices = Array.isArray(data.choices) && data.choices.length
           ? data.choices
           : [...new Set((restoredNarrationText.match(/(?:^|\n)→\s*(.+)/g) || []).map(line => line.replace(/^\s*→\s*|^\s*->\s*/g, '').trim()).filter(Boolean))];
@@ -121,7 +151,6 @@ export function useGame() {
       }
 
       // Restore sidebar
-      const classEmoji = { warrior: '⚔️', rogue: '🗡️', wizard: '🔮', cleric: '✨', bard: '🎵' };
       setSidebar({
         name: data.player?.name || 'Adventurer',
         characterClass: data.character_class,
@@ -151,17 +180,7 @@ export function useGame() {
     } finally {
       setLoading(false);
     }
-  }, [addMessage]);
-
-  // Called by DiceRoll when animation finishes — processes the queued response
-  const onDiceAnimationComplete = useCallback(() => {
-    setDiceResult(null);
-    const data = pendingResponse;
-    if (!data) { setBusy(false); return; }
-    setPendingResponse(null);
-    _processResponse(data);
-    setBusy(false);
-  }, [pendingResponse]);
+  }, [addMessage, applyCampaignEnd]);
 
   // Shared response processing (called either directly or after dice animation)
   const _processResponse = useCallback((data) => {
@@ -174,9 +193,12 @@ export function useGame() {
       return;
     }
 
-    // Input validation: irrelevant action — don't advance turn, show warning
+    // Input validation: irrelevant action — don't advance the turn; show the warning
+    // in the card with the previous options so the player can try again.
     if (data.redo_turn) {
-      addMessage('system', `<em>⚠ ${data.warning_message || data.narration || 'That action doesn\'t seem relevant.'}</em>`);
+      const warning = data.warning_message || data.narration || 'That action doesn\'t seem relevant.';
+      addMessage('system', `<em>⚠ ${warning}</em>`);
+      showNotice(warning);
       setBusy(false);
       return;
     }
@@ -251,10 +273,12 @@ export function useGame() {
     const combatData = (data.combat_started && data.combat_data) ? data.combat_data : null;
     const pendingOutcome = data.pending_outcome;  // Two-stage flow: outcome deferred until narration dismissed
 
+    const storyOver = pendingOutcome?.type === 'victory' || pendingOutcome?.type === 'game_over';
+
     setNarration({
       html: data.narration + npcHtml,
       meta: metaHtml,
-      choices: data.choices || null,
+      choices: storyOver ? null : (data.choices || null),
       combatData: combatData,
       pendingOutcome: pendingOutcome,
     });
@@ -307,10 +331,20 @@ export function useGame() {
 
     // Combat/victory/game-over activation is handled by dismissNarration()
     // which checks narration.pendingOutcome after the player reads the narration
-  }, [addMessage]);
+  }, [addMessage, showNotice]);
+
+  // Called by DiceRoll when animation finishes — processes the queued response
+  const onDiceAnimationComplete = useCallback(() => {
+    setDiceResult(null);
+    const data = pendingResponse;
+    if (!data) { setBusy(false); return; }
+    setPendingResponse(null);
+    _processResponse(data);
+    setBusy(false);
+  }, [pendingResponse, _processResponse]);
 
   const submitAction = useCallback(async (actionText) => {
-    if (!sessionId || busy || combat || gameOver) return;
+    if (!sessionId || busy || combat || gameOver || campaignEnded) return;
     setBusy(true);
     setLoading(true);
 
@@ -337,10 +371,21 @@ export function useGame() {
     } catch (e) {
       removeMessage(loadingId);
       addMessage('system', '⚠ Something went wrong: ' + e.message);
+      if (e.status === 400 && /ended/i.test(e.detail || '')) {
+        // The server already considers this campaign finished — show the end screen.
+        try {
+          const state = await api.hydrateSession(sessionId);
+          applyCampaignEnd(state.campaign_result);
+        } catch {
+          setCampaignEnded(true);
+        }
+      } else {
+        showNotice(`Something went wrong: ${e.detail || e.message}. Try again.`);
+      }
       setLoading(false);
       setBusy(false);
     }
-  }, [sessionId, busy, combat, gameOver, addMessage, removeMessage, _processResponse]);
+  }, [sessionId, busy, combat, gameOver, campaignEnded, addMessage, removeMessage, _processResponse, applyCampaignEnd, showNotice]);
 
   const resolveCombat = useCallback(async (result, combatState) => {
     if (!sessionId) return;
@@ -352,7 +397,7 @@ export function useGame() {
         enemy_name: combatState.enemy.name,
         combat_log: (combatState.logEntries || []).map(msg => ({
           actor: msg.includes('You') ? 'player' : 'enemy',
-          message: msg.replace(/^[⚔️🧪⚡🏆💀]+ /, ''),
+          message: msg.replace(/^(?:⚔️|🧪|⚡|🏆|💀)+ /u, ''),
         })),
         turns_taken: combatState.turn,
       });
@@ -370,9 +415,9 @@ export function useGame() {
 
         if (data.narration) {
           addMessage('system', data.narration);
-          const arrowChoices = [];
-          let cleanNarr = (data.narration || '').replace(/^(?:→|->)\s*(.+)$/gm, (_, choice) => { arrowChoices.push(choice.trim()); return ''; }).trim();
-          const choices = arrowChoices.length > 0 ? arrowChoices : (data.choices || null);
+          const { text: cleanNarr, choices: arrowChoices } = splitChoices(data.narration);
+          // When the fight ended the campaign, the card leads to the end screen instead of choices.
+          const choices = po ? null : (arrowChoices.length > 0 ? arrowChoices : (data.choices || null));
           setNarration({ html: cleanNarr, meta: null, choices, combatData: null, pendingOutcome: po });
         } else if (po) {
           // No narration but pending outcome (shouldn't happen, but safety)
@@ -385,7 +430,9 @@ export function useGame() {
         // Defeat / death
         addMessage('system', `<strong>💀 Fallen...</strong><br/>${data.narration || 'The darkness claims you.'}`);
         if (data.narration) {
-          setNarration({ html: data.narration, meta: null, choices: data.choices || null, combatData: null, pendingOutcome: po });
+          const { text: cleanNarr, choices: arrowChoices } = splitChoices(data.narration);
+          const choices = po ? null : (arrowChoices.length > 0 ? arrowChoices : (data.choices || null));
+          setNarration({ html: cleanNarr, meta: null, choices, combatData: null, pendingOutcome: po });
         } else if (po) {
           setTimeout(() => {
             if (po.type === 'game_over') { setGameOver(true); setCampaignEnded(true); }
@@ -411,8 +458,9 @@ export function useGame() {
     } catch (e) {
       setCombat(null);
       addMessage('system', '⚠ Combat resolution failed: ' + e.message);
+      showNotice(`Combat resolution failed: ${e.detail || e.message}`);
     }
-  }, [sessionId, addMessage]);
+  }, [sessionId, addMessage, showNotice]);
 
   const dismissNarration = useCallback(() => {
     setNarration(prev => {

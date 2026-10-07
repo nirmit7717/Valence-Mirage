@@ -1,5 +1,7 @@
 import { useState, useCallback, useEffect, useRef } from 'react';
-import { rollD20, rollDice, getWeaponDice, tickEffects, resolvePlayerAttack, resolvePlayerSkill, resolvePlayerItem, resolveEnemyTurn, canAct, applyEffect, getStatusIcon, getRollModifier, getArmorModifier, getDamageModifier, getDodgeChance } from '../utils/combat';
+import { getWeaponDice, resolvePlayerAttack, resolvePlayerSkill, resolvePlayerItem, resolveEnemyTurn, getStatusIcon, cloneCombatState, enemyIntro } from '../utils/combat';
+
+const THREAT_LABELS = { minion: 'Minion', elite: 'Elite', boss: 'Boss' };
 
 // ─── Inline Combat Dice Animation ───
 function CombatDice({ roll, target, success, crit, onDone }) {
@@ -48,13 +50,15 @@ export default function CombatOverlay({ combat, onResolve, animationsEnabled }) 
   const [flashes, setFlashes] = useState({});
   const [activeDice, setActiveDice] = useState(null); // { roll, target, success, crit }
   const floatsRef = useRef(0);
+  const diceIdRef = useRef(0);
+  // Held from the moment the player acts until the enemy's turn has fully played out.
   const actionLockRef = useRef(false);
 
   // Initialize combat
   useEffect(() => {
     if (!combat) return;
-    setState({ ...combat });
-    setLogs([{ text: `⚔️ A ${combat.enemy.name} appears!`, type: 'system' }]);
+    setState(cloneCombatState(combat));
+    setLogs([{ text: enemyIntro(combat.enemy.name), type: 'system' }]);
     setMenu('main');
     setTurnPhase('player');
     setEntering(true);
@@ -100,81 +104,88 @@ export default function CombatOverlay({ combat, onResolve, animationsEnabled }) 
 
   const showDiceThen = useCallback((diceInfo, callback) => {
     if (!diceInfo) { callback(); return; }
-    setActiveDice(diceInfo);
-    // Callback fires after CombatDice's onDone (~1.1s)
-    // We delay slightly to let the dice land visually
+    setActiveDice({ ...diceInfo, id: ++diceIdRef.current });
+    // Callback fires after CombatDice's onDone (~1.1s) so the result lands with the dice.
     setTimeout(callback, 1100);
   }, []);
 
-  // Player actions
-  const doAttack = useCallback((weaponName, dice) => {
-    if (!state || state.resolved || actionLockRef.current) return;
-    actionLockRef.current = true;
-    const s = { ...state, enemy: { ...state.enemy }, player: { ...state.player } };
-    const result = resolvePlayerAttack(s, weaponName, dice);
-    showDiceThen(result.diceInfo, () => {
-      addLog(result.log, result.type === 'crit' ? 'crit' : 'player');
-      if (result.damage) showDmg(result.damage.target, result.damage.amount, result.damage.crit ? 'crit' : result.damage.heal ? 'heal' : 'damage');
-      if (result.flash) flashCard(result.flash);
-      setState(s);
-      actionLockRef.current = false;
-      if (checkDeath(s)) return;
-      setTimeout(() => doEnemy(s), 600);
-    });
-  }, [state, addLog, showDmg, flashCard, checkDeath, showDiceThen]);
+  const clearDice = useCallback(() => setActiveDice(null), []);
 
-  const doSkill = useCallback((ability) => {
-    if (!state || state.resolved || actionLockRef.current) return;
-    if (ability.mana_cost > state.player.mana) { addLog(`Not enough mana for ${ability.name}!`, 'system'); return; }
-    actionLockRef.current = true;
-    const s = { ...state, enemy: { ...state.enemy }, player: { ...state.player, status_effects: [...state.player.status_effects], mana: state.player.mana - ability.mana_cost }, enemy: { ...state.enemy, status_effects: [...state.enemy.status_effects] } };
-    const result = resolvePlayerSkill(s, ability);
-    showDiceThen(result.diceInfo, () => {
-      addLog(result.log, result.type === 'crit' ? 'crit' : 'player');
-      if (result.damage) showDmg(result.damage.target, result.damage.amount, result.damage.crit ? 'crit' : result.damage.heal ? 'heal' : 'damage');
-      if (result.flash) flashCard(result.flash);
-      setState(s);
-      actionLockRef.current = false;
-      if (checkDeath(s)) return;
-      setTimeout(() => doEnemy(s), 600);
-    });
-  }, [state, addLog, showDmg, flashCard, checkDeath, showDiceThen]);
-
-  const doItem = useCallback((itemName, hpRestore, manaRestore) => {
-    if (!state || state.resolved || actionLockRef.current) return;
-    actionLockRef.current = true;
-    const s = { ...state, player: { ...state.player }, inventory: [...state.inventory] };
-    const results = resolvePlayerItem(s, itemName, hpRestore, manaRestore);
-    results.forEach(r => {
-      addLog(r.log, 'player');
-      if (r.damage) showDmg(r.damage.target, r.damage.amount, 'heal');
-    });
-    setState(s);
-    actionLockRef.current = false;
-    setTimeout(() => doEnemy(s), 600);
-  }, [state, addLog, showDmg]);
-
-  const doEnemy = useCallback((s) => {
-    if (s.resolved) return;
+  // Enemy turn. Resolved on a copy; nothing (HP, effects, logs) is shown until the dice land.
+  const doEnemy = useCallback((current) => {
+    if (current.resolved) return;
     setTurnPhase('enemy');
 
-    const result = resolveEnemyTurn(s);
+    const next = cloneCombatState(current);
+    const result = resolveEnemyTurn(next);
     if (result.ended) {
-      if (result.victory) { s.resolved = true; addLog(`🏆 ${s.enemy.name} is defeated!`, 'crit'); setEnding(true); setTimeout(() => onResolve('victory', s), 800); }
+      if (result.victory) {
+        next.resolved = true;
+        setState(next);
+        addLog(`🏆 ${next.enemy.name} is defeated!`, 'crit');
+        setEnding(true);
+        setTimeout(() => onResolve('victory', next), 800);
+      }
       return;
     }
     showDiceThen(result.diceInfo, () => {
       addLog(result.log, result.type === 'crit' ? 'crit' : 'enemy');
       if (result.damage) showDmg(result.damage.target, result.damage.amount, result.damage.crit ? 'crit' : 'damage');
       if (result.flash) flashCard(result.flash);
-      setState({ ...s });
-      if (checkDeath(s)) return;
+      setState(next);
+      if (checkDeath(next)) return;
       setTimeout(() => {
         setTurnPhase('player');
         setMenu('main');
+        actionLockRef.current = false;
       }, 300);
     });
   }, [addLog, showDmg, flashCard, checkDeath, onResolve, showDiceThen]);
+
+  // Player actions — same pattern: resolve on a copy, commit after the roll animation.
+  const doAttack = useCallback((weaponName, dice) => {
+    if (!state || state.resolved || actionLockRef.current) return;
+    actionLockRef.current = true;
+    const next = cloneCombatState(state);
+    const result = resolvePlayerAttack(next, weaponName, dice);
+    showDiceThen(result.diceInfo, () => {
+      addLog(result.log, result.type === 'crit' ? 'crit' : 'player');
+      if (result.damage) showDmg(result.damage.target, result.damage.amount, result.damage.crit ? 'crit' : result.damage.heal ? 'heal' : 'damage');
+      if (result.flash) flashCard(result.flash);
+      setState(next);
+      if (checkDeath(next)) return;
+      setTimeout(() => doEnemy(next), 600);
+    });
+  }, [state, addLog, showDmg, flashCard, checkDeath, showDiceThen, doEnemy]);
+
+  const doSkill = useCallback((ability) => {
+    if (!state || state.resolved || actionLockRef.current) return;
+    if (ability.mana_cost > state.player.mana) { addLog(`Not enough mana for ${ability.name}!`, 'system'); return; }
+    actionLockRef.current = true;
+    const next = cloneCombatState(state);
+    const result = resolvePlayerSkill(next, ability); // deducts the mana cost exactly once
+    showDiceThen(result.diceInfo, () => {
+      addLog(result.log, result.type === 'crit' ? 'crit' : 'player');
+      if (result.damage) showDmg(result.damage.target, result.damage.amount, result.damage.crit ? 'crit' : result.damage.heal ? 'heal' : 'damage');
+      if (result.flash) flashCard(result.flash);
+      setState(next);
+      if (checkDeath(next)) return;
+      setTimeout(() => doEnemy(next), 600);
+    });
+  }, [state, addLog, showDmg, flashCard, checkDeath, showDiceThen, doEnemy]);
+
+  const doItem = useCallback((itemName, hpRestore, manaRestore) => {
+    if (!state || state.resolved || actionLockRef.current) return;
+    actionLockRef.current = true;
+    const next = cloneCombatState(state);
+    const results = resolvePlayerItem(next, itemName, hpRestore, manaRestore);
+    results.forEach(r => {
+      addLog(r.log, 'player');
+      if (r.damage) showDmg(r.damage.target, r.damage.amount, 'heal');
+    });
+    setState(next);
+    setTimeout(() => doEnemy(next), 600);
+  }, [state, addLog, showDmg, doEnemy]);
 
   if (!combat || !state) return null;
 
@@ -190,7 +201,13 @@ export default function CombatOverlay({ combat, onResolve, animationsEnabled }) 
         <div className="arena-top">
           <div className={`combat-entity enemy-entity ${flashes.enemy ? 'hit-flash shake' : ''}`} id="enemyCard">
             <span className="entity-icon">👹</span>
-            <h3>{state.enemy.name}</h3>
+            <h3>
+              {state.enemy.name}
+              {THREAT_LABELS[state.enemy.threat] && (
+                <span className={`threat-badge threat-${state.enemy.threat}`}>{THREAT_LABELS[state.enemy.threat]}</span>
+              )}
+            </h3>
+            {state.enemy.description && <div className="enemy-desc">{state.enemy.description}</div>}
             <div className="hp-bar-bg"><div className="hp-bar-fill" style={{ width: `${ePct}%` }} /></div>
             <div className="hp-text">HP: {Math.max(0, state.enemy.hp)}/{state.enemy.max_hp} | Armor: {state.enemy.armor}</div>
             {state.enemy.status_effects.length > 0 && (
@@ -240,11 +257,12 @@ export default function CombatOverlay({ combat, onResolve, animationsEnabled }) 
         {/* Combat Dice Animation */}
         {activeDice && (
           <CombatDice
+            key={activeDice.id}
             roll={activeDice.roll}
             target={activeDice.target}
             success={activeDice.success}
             crit={activeDice.crit}
-            onDone={() => setActiveDice(null)}
+            onDone={clearDice}
           />
         )}
 
@@ -253,7 +271,8 @@ export default function CombatOverlay({ combat, onResolve, animationsEnabled }) 
           <div className={`turn-indicator ${turnPhase === 'player' ? 'your-turn' : 'enemy-turn'}`}>
             {turnPhase === 'player' ? 'YOUR TURN' : 'ENEMY TURN'}
           </div>
-          <div className="menu-tier">
+          <div className={`menu-tier ${turnPhase !== 'player' || ending ? 'menu-locked' : ''}`}
+            aria-disabled={turnPhase !== 'player' || ending}>
             {menu === 'main' && (
               <>
                 <button className="combat-btn" onClick={() => setMenu('attack')}>⚔️ Attack</button>

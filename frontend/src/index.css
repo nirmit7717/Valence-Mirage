@@ -12,10 +12,13 @@ body {
   color: #e0d8c8;
   min-height: 100vh;
   background: #0a0a0f;
-  overflow: hidden;
 }
 
-.game-root { position: relative; width: 100vw; height: 100vh; }
+/* Only the full-screen game view locks page scrolling; regular pages
+   (roles, about, dashboard, history) must scroll normally. */
+body.game-active { overflow: hidden; }
+
+.game-root { position: relative; width: 100%; height: 100vh; }
 
 /* ─── Game Stage ─── */
 .game-stage {
@@ -394,7 +397,12 @@ body {
   background: rgba(0,0,0,0.9);
   display: flex; align-items: center; justify-content: center;
   z-index: 100;
+  /* Tall content (e.g. campaign setup on small screens) scrolls instead of clipping */
+  overflow-y: auto;
+  padding: 24px 12px;
 }
+/* Auto margins keep the box centred but let it start at the top when it overflows */
+.connect-overlay > .connect-box { margin: auto; }
 .connect-box {
   background: linear-gradient(170deg, #12121e, #0a0a14);
   border: 1px solid rgba(201, 168, 76, 0.12);
@@ -533,6 +541,16 @@ body {
 .combat-btn:hover { background: linear-gradient(to bottom, #500, #200); border-color: #f00; color: #fff; box-shadow: 0 0 12px rgba(255,0,0,0.4); transform: translateY(-1px); }
 .combat-btn:active { transform: translateY(1px); box-shadow: none; }
 .combat-btn:disabled { opacity: 0.3; cursor: not-allowed; transform: none !important; box-shadow: none !important; }
+/* Actions are locked while a roll animates and during the enemy's turn */
+.menu-tier.menu-locked { pointer-events: none; opacity: 0.45; filter: grayscale(0.4); transition: opacity 0.2s; }
+.threat-badge {
+  display: inline-block; margin-left: 8px; padding: 1px 6px; border-radius: 4px;
+  font-size: 9px; letter-spacing: 1px; vertical-align: middle; border: 1px solid currentColor;
+}
+.threat-badge.threat-minion { color: #999; }
+.threat-badge.threat-elite { color: #fb5; }
+.threat-badge.threat-boss { color: #f55; text-shadow: 0 0 6px rgba(255, 60, 60, 0.6); }
+.enemy-desc { color: #a88; font-size: 11px; font-style: italic; margin-bottom: 4px; max-width: 320px; }
 .combat-btn.btn-back { background: linear-gradient(to bottom, #222, #111); border-color: #555; color: #aaa; font-size: 12px; padding: 8px; }
 .combat-btn.btn-back:hover { border-color: #888; color: #ddd; box-shadow: none; }
 .combat-btn.btn-skill { background: linear-gradient(to bottom, #230, #120); border-color: #680; color: #fc8; }
@@ -1093,6 +1111,47 @@ body {
 .size-emoji { font-size: 1.2rem; }
 .size-label { color: #e0e0e0; font-size: 0.85rem; font-weight: 600; }
 .size-desc { color: #666; font-size: 0.7rem; }
+
+/* Inside the setup box, the generic `.connect-box button` gold style used to win and
+   made every size button look identical. Scope the size buttons above it. */
+.connect-box .size-btn {
+  position: relative;
+  width: auto;
+  background: #141428;
+  border: 2px solid #2a2a3e;
+  border-radius: 8px;
+  padding: 0.55rem 0.5rem;
+  color: #e0e0e0;
+  font-family: inherit;
+  font-weight: 400;
+  letter-spacing: normal;
+  opacity: 0.75;
+}
+.connect-box .size-btn:hover { opacity: 1; border-color: #6a5a30; box-shadow: none; }
+.connect-box .size-btn:focus-visible { outline: 2px solid #c9a04e; outline-offset: 2px; }
+.connect-box .size-btn-active,
+.connect-box .size-btn-active:hover {
+  opacity: 1;
+  border-color: #c9a04e;
+  background: linear-gradient(135deg, #1a1a2e, #2a2412);
+  box-shadow: 0 0 14px rgba(201, 160, 78, 0.35);
+  transform: translateY(-2px);
+}
+.connect-box .size-btn-active .size-label { color: #c9a04e; }
+.connect-box .size-btn-active .size-desc { color: #a89060; }
+.size-check {
+  position: absolute; top: 4px; right: 6px;
+  color: #c9a04e; font-size: 0.75rem; font-weight: 700;
+}
+.class-card:focus-visible { outline: 2px solid var(--class-accent, #c9a04e); outline-offset: 2px; }
+
+/* Campaign end screen */
+.campaign-end-box { max-width: 450px; }
+.campaign-end-actions { display: flex; flex-direction: column; gap: 8px; }
+.campaign-end-actions .cancel-btn { margin-top: 0; }
+
+/* Notices shown in the narrative card (e.g. an action that doesn't fit the story) */
+.nc-warning { color: #e0b070; }
 
 /* Start button */
 .connect-start-btn {

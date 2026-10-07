@@ -51,6 +51,17 @@ export async function getUserDashboard() {
   return res.json();
 }
 
+// Errors carry the HTTP status and the server's `detail` so callers can react
+// (e.g. "Campaign has ended" → show the end screen).
+async function apiError(res) {
+  const body = await res.json().catch(() => ({}));
+  const detail = typeof body.detail === 'string' ? body.detail : '';
+  const err = new Error(detail || `Server error: ${res.status}`);
+  err.status = res.status;
+  err.detail = detail;
+  return err;
+}
+
 // ─── Game (existing, now with optional auth) ──────────────────────────────
 
 export async function createSession({ player_name, keywords, character_class, campaign_size }) {
@@ -59,7 +70,7 @@ export async function createSession({ player_name, keywords, character_class, ca
     headers: getAuthHeaders(),
     body: JSON.stringify({ player_name, keywords, character_class, campaign_size }),
   });
-  if (!res.ok) throw new Error(`Server error: ${res.status}`);
+  if (!res.ok) throw await apiError(res);
   return res.json();
 }
 
@@ -69,7 +80,7 @@ export async function submitAction(sessionId, action) {
     headers: getAuthHeaders(),
     body: JSON.stringify({ action }),
   });
-  if (!res.ok) throw new Error(`Server error: ${res.status}`);
+  if (!res.ok) throw await apiError(res);
   return res.json();
 }
 
@@ -79,7 +90,7 @@ export async function resolveCombat(sessionId, combatResult) {
     headers: getAuthHeaders(),
     body: JSON.stringify(combatResult),
   });
-  if (!res.ok) throw new Error(`Server error: ${res.status}`);
+  if (!res.ok) throw await apiError(res);
   return res.json();
 }
 

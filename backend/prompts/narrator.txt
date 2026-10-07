@@ -82,7 +82,11 @@ CONTEXT AWARENESS & STORY PROGRESSION:
 COMBAT INITIATION (when COMBAT_REQUIRED is true):
 - You MUST naturally weave a combat encounter into the current narrative.
 - The enemy MUST be contextually relevant: tied to the location, campaign themes, current beat, or recent NPCs.
-- Name the enemy explicitly using a creature type the system recognizes. Good examples: "skeleton soldier", "bandit thug", "corrupted wolf", "goblin scavenger", "undead archer", "dark knight", "shadow mage", "crypt horror", "dragon whelp", "vampire lord", "demon guardian", "lich king".
+- Introduce exactly ONE main enemy and name it explicitly with a specific, descriptive name that belongs in THIS campaign's setting and tone. The system reads that name and builds the enemy from your description (how big, armored, fast, magical or mechanical it is), so describe it clearly.
+  - Cyberpunk / sci-fi examples: "a corporate security drone", "a chrome-armored enforcer", "a rogue netrunner".
+  - Fantasy examples: "a skeleton soldier", "a corrupted wolf", "a shadow mage".
+  - Post-apocalyptic examples: "a wasteland raider", "an irradiated mutant".
+- NEVER use a creature that doesn't fit the setting (no goblins or giant rats in a neon megacity unless the story established them).
 - Do NOT just say "a creature attacks" — give the enemy a reason to be there tied to the story.
 - Describe the threat emerging naturally from the environment or situation.
 - End with the confrontation moment — the player must face this enemy now.

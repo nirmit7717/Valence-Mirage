@@ -5,9 +5,9 @@ import random
 import logging
 from models.combat import (
     CombatState, Combatant, CombatAction, CombatActionType,
-    CombatLogEntry, StatusEffect, get_effect_rule,
+    CombatLogEntry, EnemyTemplate, StatusEffect, get_effect_rule,
 )
-from data.enemies import get_random_enemy, roll_loot, roll_damage, ENEMY_TEMPLATES
+from data.enemies import get_random_enemy, roll_damage, ENEMY_TEMPLATES
 from data.items import item_from_definition
 
 logger = logging.getLogger(__name__)
@@ -26,10 +26,18 @@ class CombatEngine:
         enemy_key: str | None = None,
         narrative_context: str = "",
         enemy_name_override: str | None = None,
+        enemy_template: EnemyTemplate | None = None,
     ) -> CombatState:
-        """Create a new combat encounter."""
+        """Create a new combat encounter.
+
+        Pass ``enemy_template`` for a designed enemy (name from the campaign,
+        stats from an archetype preset); otherwise a hand-built template is used.
+        """
         # Pick enemy
-        if enemy_key and enemy_key in ENEMY_TEMPLATES:
+        if enemy_template is not None:
+            template = enemy_template
+            enemy_key = enemy_key if enemy_key in ENEMY_TEMPLATES else ""
+        elif enemy_key and enemy_key in ENEMY_TEMPLATES:
             template = ENEMY_TEMPLATES[enemy_key]
         else:
             template = get_random_enemy(enemy_tier, self.rng)
@@ -60,7 +68,10 @@ class CombatEngine:
 
         return CombatState(
             combat_id=str(uuid.uuid4()),
-            enemy_key=enemy_key,
+            enemy_key=enemy_key or "",
+            enemy_tier=template.tier,
+            xp_reward=template.xp_reward,
+            loot_table=[dict(entry) for entry in template.loot_table],
             enemies=[enemy],
             player=player,
             turn_number=1,
@@ -297,24 +308,28 @@ class CombatEngine:
         """Calculate XP + loot on victory."""
         if combat.status != "victory":
             return {"xp": 0, "items": [], "loot_descriptions": []}
+        return self.roll_rewards(combat)
 
-        total_xp = 0
-        items = []
-        descriptions = []
+    def roll_rewards(self, combat: CombatState) -> dict:
+        """XP + loot from the server-stored encounter (designed or hand-built enemies).
 
-        for enemy in combat.enemies:
-            template = ENEMY_TEMPLATES.get(
-                next((k for k, v in ENEMY_TEMPLATES.items() if v.name == enemy.name), ""),
-                None,
+        Older stored combats have no xp/loot on the state; fall back to the template.
+        """
+        enemy_name = combat.enemies[0].name if combat.enemies else "the enemy"
+        xp, loot_table = combat.xp_reward, combat.loot_table
+        if not xp and not loot_table:
+            template = ENEMY_TEMPLATES.get(combat.enemy_key) or next(
+                (t for t in ENEMY_TEMPLATES.values() if t.name == enemy_name), None
             )
             if template:
-                total_xp += template.xp_reward
-                loot = roll_loot(template, self.rng)
-                for entry in loot:
-                    items.append(item_from_definition(entry, f"Looted from {enemy.name}"))
-                    descriptions.append(f"Found: {entry['name']}")
+                xp, loot_table = template.xp_reward, template.loot_table
 
-        return {"xp": total_xp, "items": items, "loot_descriptions": descriptions}
+        items, descriptions = [], []
+        for entry in loot_table:
+            if self.rng.random() < entry.get("chance", 0.5):
+                items.append(item_from_definition(entry, f"Looted from {enemy_name}"))
+                descriptions.append(f"Found: {entry['name']}")
+        return {"xp": xp, "items": items, "loot_descriptions": descriptions}
 
     def _calc_player_armor(self, player_state) -> int:
         """Calculate total armor from inventory."""

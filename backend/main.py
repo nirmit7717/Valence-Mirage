@@ -16,6 +16,8 @@ from engines.npc_engine import NPCEngine, NPCState, NPCPersonality
 from engines.combat_engine import CombatEngine
 from engines.deviation import evaluate_alignment, get_warning_message
 from engines.engagement_tracker import EngagementTracker
+from engines.enemy_designer import EnemyDesigner, design_enemy
+from engines.setting import genre_of
 from models.profile import PlayerProfile, get_beat_weights, get_narration_params
 from models.action import ActionIntent
 from models.game_state import GameSession, Turn, Item
@@ -45,6 +47,7 @@ async def lifespan(app: FastAPI):
     app.state.npc_engine = NPCEngine()
     app.state.combat_engine = CombatEngine()
     app.state.engagement_tracker = EngagementTracker()
+    app.state.enemy_designer = EnemyDesigner()
 
     # Initialize vector store + RAG
     app.state.vector_store = VectorStore()
@@ -307,6 +310,7 @@ async def create_session(req: NewSessionRequest = NewSessionRequest(), authoriza
     from data.campaign_templates import CAMPAIGN_TEMPLATES
     template = CAMPAIGN_TEMPLATES.get(req.campaign_size.lower(), CAMPAIGN_TEMPLATES["medium"])
     session.world_state["campaign_size"] = req.campaign_size.lower()
+    session.world_state["campaign_keywords"] = req.keywords.strip()  # setting genre detection
     session.world_state["campaign_template"] = template.model_dump()
 
     _bw = get_beat_weights(player_profile)
@@ -458,6 +462,7 @@ async def hydrate_session(session_id: str):
         "campaign_objective": session.world_state.get("campaign_objective", ""),
         "combat": combat_ws if combat_ws and not combat_ws.get("resolved", False) else None,
         "campaign_ended": campaign_ended,
+        "campaign_result": _campaign_result(session.world_state) if campaign_ended else None,
         "warning_count": session.world_state.get("warning_count", 0),
         "npcs": session.world_state.get("npcs", {}),
         "inventory": [{"name": i.name, "type": i.item_type, "hp_restore": getattr(i, "hp_restore", 0), "mana_restore": getattr(i, "mana_restore", 0)} for i in session.player.inventory],
@@ -574,7 +579,10 @@ async def submit_action(session_id: str, req: ActionRequest):
         f"CHA={session.player.stats.charisma} "
         f"WIS={session.player.stats.wisdom}"
     )
+    campaign_info = session.world_state.get("campaign") or {}
     world_context = (
+        f"Campaign: {campaign_info.get('title', '')} — {campaign_info.get('premise', '')} "
+        f"(setting: {campaign_info.get('setting', '')}; tone: {campaign_info.get('tone', '')}). "
         f"Location: {session.world_state.get('location', 'unknown')}. "
         f"{session.world_state.get('situation', '')}"
     )
@@ -666,6 +674,7 @@ async def submit_action(session_id: str, req: ActionRequest):
                 location=location,
                 npc_names=npc_names,
                 turn_history=session.turn_history[-3:] if session.turn_history else None,
+                setting_genre=genre_of(session.world_state),
             )
         except Exception as e:
             logger.warning(f"Deviation eval failed, allowing action: {e}")
@@ -675,68 +684,7 @@ async def submit_action(session_id: str, req: ActionRequest):
     logger.info(f"Deviation: {classification} (alignment={alignment:.2f}, warnings={warning_count})")
 
     if classification == "major":
-        warning_count += 1
-        session.world_state["warning_count"] = warning_count
-        deviation_score = max(-1.0, deviation_score - 0.3)
-        session.world_state["deviation_score"] = deviation_score
-        warning_message_out = get_warning_message(warning_count)
-
-        if warning_count >= 3:
-            # Game over — too many deviations
-            game_over_reason = "lost_focus"
-            session.world_state["campaign_ended"] = True
-            await _record_campaign_end(db, session, "lost_focus")
-            session.turn_number += 1
-            final_msg = get_warning_message(3) or "You have strayed too far from your path. The journey collapses."
-            return ActionResponse(
-                turn_number=session.turn_number,
-                intent=ActionIntent(action=req.action, action_type="invalid", description="Lost focus", relevant_stat="wisdom", risk="low", requires_roll=False),
-                requires_roll=False,
-                outcome="critical_failure",
-                narration=final_msg,
-                state_changes=StateChanges(),
-                player_hp=session.player.hp,
-                player_mana=session.player.mana,
-                player_level=session.player.level,
-                player_xp=session.player.xp,
-                player_xp_to_next=session.player.xp_to_next,
-                max_hp=session.player.max_hp,
-                max_mana=session.player.max_mana,
-                inventory=[i.model_dump() for i in session.player.inventory],
-                choices=[],
-                game_over=False,
-                victory=False,
-                campaign_ended=False,
-                campaign_objective=campaign_objective,
-                warning_count=warning_count,
-                warning_message=final_msg,
-                game_over_reason=game_over_reason,
-                pending_outcome={"type": "game_over", "reason": "lost_focus"},
-                ui_context={"environment": "default", "tone": "tense"},
-            )
-        # Warning < 3 — don't call narrator, let player retry
-        session.world_state["warning_count"] = warning_count
-        return ActionResponse(
-            turn_number=session.turn_number,
-            intent=ActionIntent(action=req.action, action_type="invalid", description="Irrelevant", relevant_stat="wisdom", risk="low", requires_roll=False),
-            requires_roll=False,
-            outcome="irrelevant_action",
-            narration=warning_message_out or "That action doesn't seem relevant to your current situation.",
-            state_changes=StateChanges(),
-            player_hp=session.player.hp,
-            player_mana=session.player.mana,
-            player_level=session.player.level,
-            player_xp=session.player.xp,
-            player_xp_to_next=session.player.xp_to_next,
-            max_hp=session.player.max_hp,
-            max_mana=session.player.max_mana,
-            inventory=[i.model_dump() for i in session.player.inventory],
-            choices=[],
-            warning_count=warning_count,
-            warning_message=warning_message_out,
-            redo_turn=True,
-            ui_context={"environment": "default", "tone": "tense"},
-        )
+        return await _reject_irrelevant_action(db, session, campaign_objective, "keyword check")
     elif classification == "slight":
         deviation_score = max(-1.0, deviation_score - 0.1)
         session.world_state["deviation_score"] = deviation_score
@@ -757,6 +705,18 @@ async def submit_action(session_id: str, req: ActionRequest):
     except Exception as e:
         logger.error(f"Intent parsing API error: {e}")
         raise HTTPException(status_code=503, detail=f"AI service unavailable: {e}")
+
+    # 1a. Semantic relevance — the keyword check above is a cheap prefilter; the intent
+    # model judges the action against the actual setting and scene. Fails open: if the
+    # model returns no verdict, the action is treated as relevant.
+    relevance = (intent.relevance or "relevant").strip().lower()
+    if VALIDATION_ENABLED and relevance == "off_topic":
+        logger.info(f"Validation: intent model judged action off-topic: {req.action[:80]!r}")
+        return await _reject_irrelevant_action(db, session, campaign_objective, "intent model")
+    if relevance == "tangential":
+        deviation_score = max(-1.0, deviation_score - 0.1)
+        session.world_state["deviation_score"] = deviation_score
+        alignment = min(alignment, 0.0)  # wandering off gets no narrative-alignment bonus
 
     # 1b. NPC interaction (runs before roll check)
     npc_dialogue = None
@@ -874,9 +834,11 @@ async def submit_action(session_id: str, req: ActionRequest):
     if pending_combat:
         _combat_ctx = (
             "COMBAT_REQUIRED: True. A combat encounter must begin NOW. "
-            "Naturally introduce a hostile enemy that fits the current story, location, and narrative. "
-            "Name the enemy type explicitly (e.g., 'a skeleton soldier', 'a bandit thug', 'a corrupted wolf'). "
-            "Describe the threat emerging and confronting the player. The combat will be resolved by the player."
+            "Naturally introduce ONE hostile enemy that fits this campaign's setting, the current location, and the story. "
+            "Give it a specific, descriptive name that belongs in this world (e.g., in a cyberpunk city: "
+            "'a corporate security drone'; in a haunted forest: 'a corrupted wolf'). Never use a creature that "
+            "does not fit the setting. Describe how it looks and how it threatens the player. "
+            "The combat will be resolved by the player."
         )
 
     if not intent.requires_roll:
@@ -912,23 +874,20 @@ async def submit_action(session_id: str, req: ActionRequest):
         combat_data_no_roll = None
         combat_source_no_roll = None
         if pending_combat and not session.world_state.get("combat"):
-            enemy_key, combat_source_no_roll = _choose_enemy_key(session, narration)
-            if enemy_key:
-                combat_data_no_roll = _start_combat(session, enemy_key, narration, combat_source_no_roll)
-                combat_started_no_roll = True
-            session.world_state["pending_combat"] = False
+            combat_data_no_roll, combat_source_no_roll = await _start_combat(session, narration)
+            combat_started_no_roll = True
 
         if campaign_data:
             bp = CampaignBlueprint(**campaign_data)
             beat = planner.get_current_beat(bp)
             if beat:
-                # Beat advancement for narrative choices
-                if beat.type != "combat":
+                # Beat advancement for narrative choices (a fight that just started
+                # resolves the beat itself on victory, so don't advance past it here)
+                if beat.type != "combat" and not combat_started_no_roll:
                     if intent.action_type == "choice" or intent.scale in ["moderate", "major", "extreme", "cosmic"] or turns_in_beat >= 4:
                         bp_adv = planner.advance_beat(bp)
                         if bp_adv.current_act == bp.current_act and bp_adv.current_beat == bp.current_beat and _is_campaign_complete(bp):
-                            session.world_state["campaign_ended"] = True
-                            await _record_campaign_end(db, session, "victory")
+                            await _end_campaign(db, session, "victory")
                         else:
                             bp = bp_adv
                             session.world_state["campaign"] = bp.model_dump()
@@ -975,7 +934,9 @@ async def submit_action(session_id: str, req: ActionRequest):
             current_beat=current_beat_title,
             npc_dialogue=npc_dialogue,
             npcs=[{"name": n.get("personality",{}).get("name","?"), "role": n.get("personality",{}).get("role","?"), "disposition": n.get("disposition",0)} for n in session.world_state.get("npcs", {}).values()],
-            choices=[] if combat_started_no_roll else extract_choices(narration),
+            # No choices once the story is over or a fight begins — the card then
+            # offers the single "Continue" that leads to the outcome.
+            choices=[] if combat_started_no_roll or session.world_state.get("campaign_ended") else extract_choices(narration),
             combat_started=combat_started_no_roll,
             combat_data=combat_data_no_roll,
             campaign_ended=False,  # Deferred via pending_outcome
@@ -1052,9 +1013,7 @@ async def submit_action(session_id: str, req: ActionRequest):
     # 7b. Check for player death
     is_dead, death_message = _check_player_death(session)
     if is_dead:
-        session.world_state["campaign_ended"] = True
-        session.world_state["status"] = "failed"
-        await _record_campaign_end(db, session, "defeat")
+        await _end_campaign(db, session, "defeat")
         session.turn_number += 1
         turn = Turn(
             turn_number=session.turn_number,
@@ -1120,28 +1079,15 @@ async def submit_action(session_id: str, req: ActionRequest):
                 # Beat requires combat — narrator already introduced it via pending_combat flag.
                 # Start combat with the enemy the narrator named, or a contextual fallback.
                 if not session.world_state.get("combat"):
-                    enemy_key, enemy_source = _choose_enemy_key(session, narration)
-                    if enemy_key:
-                        combat_source = "beat" if enemy_source == "narrator" else enemy_source
-                        combat_data = _start_combat(session, enemy_key, narration, combat_source)
-                        combat_started = True
-                        combat_beat_available = True
-                    else:
-                            # Even fallback failed — advance beat
-                            bp_adv = planner.advance_beat(bp)
-                            if bp_adv.current_act == bp.current_act and bp_adv.current_beat == bp.current_beat and _is_campaign_complete(bp):
-                                session.world_state["campaign_ended"] = True
-                            else:
-                                bp = bp_adv
-                                session.world_state["campaign"] = bp.model_dump()
-                                beat = planner.get_current_beat(bp)
-                                session.world_state["turns_in_beat"] = 0
+                    combat_data, combat_source = await _start_combat(session, narration)
+                    combat_started = True
+                    combat_beat_available = True
             else:
                 # Advance if successfully addressed or max pacing reached
                 if outcome_result in ["success", "critical_success", "partial_success"] or narrative_bonus > 0.0 or turns_in_beat >= 4:
                     bp_adv = planner.advance_beat(bp)
                     if bp_adv.current_act == bp.current_act and bp_adv.current_beat == bp.current_beat and _is_campaign_complete(bp):
-                        session.world_state["campaign_ended"] = True
+                        await _end_campaign(db, session, "victory")
                     else:
                         bp = bp_adv
                         session.world_state["campaign"] = bp.model_dump()
@@ -1149,12 +1095,10 @@ async def submit_action(session_id: str, req: ActionRequest):
                         session.world_state["turns_in_beat"] = 0
 
                 # Handle pending_combat on a non-combat beat
-                if pending_combat and not combat_started and not session.world_state.get("combat"):
-                    enemy_key, combat_source = _choose_enemy_key(session, narration)
-                    if enemy_key:
-                        combat_data = _start_combat(session, enemy_key, narration, combat_source)
-                        combat_started = True
-                    session.world_state["pending_combat"] = False
+                if (pending_combat and not combat_started and not session.world_state.get("combat")
+                        and not session.world_state.get("campaign_ended")):
+                    combat_data, combat_source = await _start_combat(session, narration)
+                    combat_started = True
         
         if beat:
             current_beat_title = beat.title
@@ -1225,7 +1169,7 @@ async def submit_action(session_id: str, req: ActionRequest):
         current_act=session.world_state.get("current_act", 1),
         npc_dialogue=npc_dialogue,
         npcs=[{"name": n.get("personality",{}).get("name","?"), "role": n.get("personality",{}).get("role","?"), "disposition": n.get("disposition",0)} for n in session.world_state.get("npcs", {}).values()],
-        choices=[] if combat_started else extract_choices(narration),
+        choices=[] if combat_started or session.world_state.get("campaign_ended") else extract_choices(narration),
         combat_started=combat_started,
         combat_data=combat_data,
         campaign_ended=False,  # Deferred via pending_outcome
@@ -1342,27 +1286,31 @@ async def resolve_combat(session_id: str, req: CombatResolveRequest):
     narration = ""
     choices = []
 
+    # The server-stored encounter is the source of truth for who was fought and what it drops.
+    active_combat = _get_active_combat(session)
+    enemy_name = active_combat.enemies[0].name if active_combat else req.enemy_name
+
     if req.result == "victory":
-        # Calculate rewards using enemy name lookup
-        from data.enemies import ENEMY_TEMPLATES, roll_loot
-        enemy_key = next((k for k, v in ENEMY_TEMPLATES.items() if v.name == req.enemy_name), None)
-        if enemy_key:
-            template = ENEMY_TEMPLATES[enemy_key]
-            rewards["xp"] = template.xp_reward
-            loot = roll_loot(template)
-            for entry in loot:
-                item = item_from_definition(entry, f"Looted from {req.enemy_name}")
-                rewards["items"].append(item)
-                rewards["loot_descriptions"].append(f"Found: {entry['name']}")
-            session.player.inventory.extend(rewards["items"])
-        
+        if active_combat is None:
+            # Legacy fallback: no stored encounter, look the template up by name.
+            from data.enemies import ENEMY_TEMPLATES
+            legacy = next((t for t in ENEMY_TEMPLATES.values() if t.name == req.enemy_name), None)
+            active_combat = CombatState(
+                enemies=[], xp_reward=legacy.xp_reward if legacy else 0,
+                loot_table=legacy.loot_table if legacy else [],
+            )
+        rolled = combat_engine.roll_rewards(active_combat)
+        rewards["xp"] = rolled["xp"]
+        rewards["items"] = rolled["items"]
+        rewards["loot_descriptions"] = rolled["loot_descriptions"]
+        session.player.inventory.extend(rewards["items"])
         session.player.gain_xp(rewards["xp"])
 
-        # Generate post-combat narration using the MAIN narrator (70B, full campaign context)
+        # Generate post-combat narration using the main narrator (full campaign context)
         log_summary = "; ".join([f"{e.get('actor','')}: {e.get('message','')}" for e in req.combat_log[-4:]])
         combat_intent = ActionIntent(
             action_type="explore",
-            description=f"After defeating a {req.enemy_name} in combat ({req.turns_taken} turns, key moments: {log_summary}), survey the aftermath and continue the journey.",
+            description=f"After defeating {enemy_name} in combat ({req.turns_taken} turns, key moments: {log_summary}), survey the aftermath and continue the journey.",
             scale="moderate",
             risk="low",
             relevant_stat="wisdom",
@@ -1380,7 +1328,7 @@ async def resolve_combat(session_id: str, req: CombatResolveRequest):
                 narration_params=narration_params,
             )
         except Exception:
-            narration = f"The {req.enemy_name} falls. The battle is won. What lies ahead?"
+            narration = f"{enemy_name} falls. The battle is won. What lies ahead?"
         
         choices = extract_choices(narration)
         session.world_state["situation"] = narration
@@ -1392,8 +1340,7 @@ async def resolve_combat(session_id: str, req: CombatResolveRequest):
             bp = CampaignBlueprint(**campaign_data)
             bp_adv = planner.advance_beat(bp)
             if bp_adv.current_act == bp.current_act and bp_adv.current_beat == bp.current_beat and _is_campaign_complete(bp):
-                session.world_state["campaign_ended"] = True
-                await _record_campaign_end(db, session, "victory")
+                await _end_campaign(db, session, "victory")
             else:
                 bp = bp_adv
                 session.world_state["campaign"] = bp.model_dump()
@@ -1401,7 +1348,7 @@ async def resolve_combat(session_id: str, req: CombatResolveRequest):
     elif req.result == "defeat":
         combat_intent = ActionIntent(
             action_type="explore",
-            description=f"Recover from defeat by a {req.enemy_name}. The player barely survived.",
+            description=f"Recover from defeat by {enemy_name}. The player barely survived.",
             scale="major",
             risk="high",
             relevant_stat="constitution",
@@ -1419,7 +1366,7 @@ async def resolve_combat(session_id: str, req: CombatResolveRequest):
                 narration_params=narration_params,
             )
         except Exception:
-            narration = f"The {req.enemy_name} overwhelms you. Darkness takes hold..."
+            narration = f"{enemy_name} overwhelms you. Darkness takes hold..."
         
         choices = extract_choices(narration)
         session.world_state["situation"] = narration
@@ -1430,15 +1377,15 @@ async def resolve_combat(session_id: str, req: CombatResolveRequest):
     victory = False
     if is_dead:
         game_over = True
-        session.world_state["campaign_ended"] = True
-        session.world_state["status"] = "failed"
-        await _record_campaign_end(db, session, "defeat")
+        await _end_campaign(db, session, "defeat")
         narration = death_message
         choices = []
 
     campaign_ended_flag = session.world_state.get("campaign_ended", False)
     if campaign_ended_flag and not is_dead:
         victory = True
+    if campaign_ended_flag:
+        choices = []  # the story is over — the card leads to the end screen instead
 
     # Clean up combat state
     session.world_state.pop("combat", None)
@@ -1563,6 +1510,84 @@ def _compute_state_changes(intent: ActionIntent, outcome: str, roll: int) -> Sta
 
 # ─── Campaign history helper ───
 
+async def _reject_irrelevant_action(db: Database, session, campaign_objective: str, detected_by: str) -> ActionResponse:
+    """Warn about an action that doesn't fit the story. The turn doesn't advance;
+    the third warning ends the campaign ("lost focus")."""
+    world = session.world_state
+    warning_count = world.get("warning_count", 0) + 1
+    world["warning_count"] = warning_count
+    world["deviation_score"] = max(-1.0, world.get("deviation_score", 0.0) - 0.3)
+    logger.info(f"Irrelevant action rejected ({detected_by}); warning {warning_count}/3")
+
+    common = dict(
+        requires_roll=False,
+        state_changes=StateChanges(),
+        player_hp=session.player.hp,
+        player_mana=session.player.mana,
+        player_level=session.player.level,
+        player_xp=session.player.xp,
+        player_xp_to_next=session.player.xp_to_next,
+        max_hp=session.player.max_hp,
+        max_mana=session.player.max_mana,
+        inventory=[i.model_dump() for i in session.player.inventory],
+        choices=[],
+        warning_count=warning_count,
+        campaign_objective=campaign_objective,
+        ui_context={"environment": "default", "tone": "tense"},
+    )
+
+    if warning_count >= 3:
+        await _end_campaign(db, session, "lost_focus")
+        session.turn_number += 1
+        await db.save_session(session)
+        final_msg = get_warning_message(3) or "You have strayed too far from your path. The journey collapses."
+        return ActionResponse(
+            **common,
+            turn_number=session.turn_number,
+            intent=ActionIntent(action_type="invalid", description="Lost focus", relevant_stat="wisdom", risk="low", requires_roll=False),
+            outcome="critical_failure",
+            narration=final_msg,
+            warning_message=final_msg,
+            game_over_reason="lost_focus",
+            pending_outcome={"type": "game_over", "reason": "lost_focus"},
+        )
+
+    await db.save_session(session)
+    warning = get_warning_message(warning_count) or "That action doesn't seem relevant to your current situation."
+    return ActionResponse(
+        **common,
+        turn_number=session.turn_number,
+        intent=ActionIntent(action_type="invalid", description="Irrelevant", relevant_stat="wisdom", risk="low", requires_roll=False),
+        outcome="irrelevant_action",
+        narration=warning,
+        warning_message=warning,
+        redo_turn=True,
+    )
+
+
+def _campaign_result(world_state: dict) -> str:
+    """victory | defeat | lost_focus — also covers sessions that ended before campaign_result existed."""
+    result = world_state.get("campaign_result")
+    if result:
+        return result
+    if world_state.get("status") == "failed":
+        return "defeat"
+    if world_state.get("warning_count", 0) >= 3:
+        return "lost_focus"
+    return "victory"
+
+
+async def _end_campaign(db: Database, session, result: str):
+    """Mark the campaign finished and record it. result: victory | defeat | lost_focus."""
+    world = session.world_state
+    world["campaign_ended"] = True
+    world["campaign_result"] = result
+    if result == "defeat":
+        world["status"] = "failed"
+    world.pop("pending_combat", None)
+    await _record_campaign_end(db, session, result)
+
+
 async def _record_campaign_end(db: Database, session, result: str):
     """Save completed campaign to history. Called once per campaign end."""
     # Prevent duplicate saves
@@ -1572,7 +1597,7 @@ async def _record_campaign_end(db: Database, session, result: str):
 
     campaign = session.world_state.get("campaign", {})
     title = campaign.get("title", "Unknown Campaign")
-    cls = session.world_state.get("character_class", "unknown")
+    cls = session.player.character_class or session.world_state.get("character_class", "unknown")
     user_id = session.world_state.get("user_id")
 
     # Fallback: if no user_id on session, try admin (default user)
@@ -1659,132 +1684,6 @@ def _extract_ui_context(narration: str, world_state: dict, combat_active: bool) 
     return {"environment": environment, "tone": tone, "enemy_name": enemy_name}
 
 
-def _extract_enemy_from_narration(narration: str, player_level: int) -> tuple[str | None, str | None]:
-    """Extract enemy name from narrator output and match to an enemy template.
-    
-    The narrator writes the enemy naturally into the story. We parse the narration
-    to find what enemy was mentioned and match it to the closest template.
-    
-    Returns (enemy_name, enemy_key).
-    """
-    from data.enemies import ENEMY_TEMPLATES, ENEMIES_BY_TIER
-    import random
-    rng = random.Random()
-    narration_lower = narration.lower()
-    enemy_tier = min(5, max(1, player_level))
-
-    # Keyword → enemy_key mapping (same as before but now used only for matching)
-    keyword_map = {
-        "goblin": "goblin_scavenger", "scavenger": "goblin_scavenger",
-        "skeleton": "skeleton_soldier", "bone": "skeleton_soldier", "undead": "skeleton_soldier", "zombie": "skeleton_soldier",
-        "rat": "giant_rat", "vermin": "giant_rat",
-        "bandit": "bandit_thug", "thug": "bandit_thug", "thief": "bandit_thug", "robber": "bandit_thug", "brigand": "bandit_thug",
-        "wolf": "corrupted_wolf", "hound": "corrupted_wolf", "beast": "corrupted_wolf",
-        "archer": "undead_archer",
-        "knight": "dark_knight", "armored": "dark_knight", "warrior": "dark_knight", "soldier": "dark_knight",
-        "mage": "shadow_mage", "sorcerer": "shadow_mage", "wizard": "shadow_mage", "witch": "shadow_mage",
-        "horror": "crypt_horror", "abomination": "crypt_horror", "creature": "crypt_horror",
-        "dragon": "dragon_whelp", "wyrm": "dragon_whelp", "drake": "dragon_whelp",
-        "vampire": "vampire_lord", "blood": "vampire_lord",
-        "demon": "demon_guardian", "fiend": "demon_guardian",
-        "lich": "lich_king", "necromancer": "lich_king",
-    }
-
-    # Find all keyword matches with tier proximity
-    matches = []
-    for keyword, enemy_key in keyword_map.items():
-        if keyword in narration_lower and enemy_key in ENEMY_TEMPLATES:
-            tmpl = ENEMY_TEMPLATES[enemy_key]
-            tier_diff = abs(tmpl.tier - enemy_tier)
-            matches.append((tier_diff, enemy_key))
-
-    if matches:
-        matches.sort(key=lambda x: x[0])
-        best_key = matches[0][1]
-        return ENEMY_TEMPLATES[best_key].name, best_key
-
-    # No match found — return None (narrator didn't name a recognized enemy)
-    return None, None
-
-
-def _fallback_enemy(world_state: dict, player_level: int) -> tuple[str, str]:
-    """Fallback enemy selection when narrator extraction fails.
-    
-    Uses location/campaign context to pick a reasonable enemy.
-    Guarantees combat happens when required.
-    
-    Returns (enemy_key, enemy_name).
-    """
-    from data.enemies import ENEMY_TEMPLATES, ENEMIES_BY_TIER
-    import random
-    rng = random.Random()
-    enemy_tier = min(5, max(1, player_level))
-
-    location = world_state.get("location", "").lower()
-    situation = world_state.get("situation", "")[-300:].lower()
-    campaign = world_state.get("campaign", {})
-    themes = " ".join(campaign.get("key_themes", []))
-    title = campaign.get("title", "").lower()
-    premise = campaign.get("premise", "").lower()
-
-    all_text = f"{location} {situation} {themes} {title} {premise}"
-
-    # Location-aware fallback mapping
-    location_map = {
-        "crypt": ["skeleton_soldier", "undead_archer"],
-        "grave": ["skeleton_soldier", "crypt_horror"],
-        "dungeon": ["skeleton_soldier", "undead_archer", "giant_rat"],
-        "cave": ["goblin_scavenger", "giant_rat", "corrupted_wolf"],
-        "mine": ["goblin_scavenger", "bandit_thug"],
-        "forest": ["corrupted_wolf", "giant_rat", "bandit_thug"],
-        "swamp": ["giant_rat", "crypt_horror"],
-        "ruin": ["skeleton_soldier", "goblin_scavenger", "undead_archer"],
-        "castle": ["dark_knight", "shadow_mage"],
-        "tower": ["shadow_mage", "dark_knight"],
-        "city": ["bandit_thug", "dark_knight"],
-        "town": ["bandit_thug"],
-        "village": ["bandit_thug", "giant_rat"],
-        "mountain": ["goblin_scavenger", "dark_knight"],
-        "volcano": ["demon_guardian"],
-    }
-
-    # Try location match first
-    for loc_keyword, candidates in location_map.items():
-        if loc_keyword in all_text:
-            # Filter by tier proximity
-            valid = [c for c in candidates if c in ENEMY_TEMPLATES and abs(ENEMY_TEMPLATES[c].tier - enemy_tier) <= 2]
-            if valid:
-                chosen = rng.choice(valid)
-                return chosen, ENEMY_TEMPLATES[chosen].name
-
-    # Theme-based fallback
-    theme_map = {
-        "undead": "skeleton_soldier", "necro": "undead_archer", "death": "crypt_horror",
-        "demon": "demon_guardian", "fire": "demon_guardian", "hell": "demon_guardian",
-        "dragon": "dragon_whelp", "wyrm": "dragon_whelp",
-        "bandit": "bandit_thug", "thief": "bandit_thug",
-        "magic": "shadow_mage", "arcane": "shadow_mage",
-        "wolf": "corrupted_wolf", "beast": "corrupted_wolf",
-        "goblin": "goblin_scavenger",
-    }
-    for theme, enemy_key in theme_map.items():
-        if theme in all_text and enemy_key in ENEMY_TEMPLATES:
-            tmpl = ENEMY_TEMPLATES[enemy_key]
-            if abs(tmpl.tier - enemy_tier) <= 2:
-                return enemy_key, tmpl.name
-
-    # Absolute fallback — tier-appropriate random
-    keys = ENEMIES_BY_TIER.get(enemy_tier, [])
-    if not keys:
-        keys = ENEMIES_BY_TIER.get(max(1, enemy_tier - 1), [])
-    if keys:
-        chosen = rng.choice(keys)
-        return chosen, ENEMY_TEMPLATES[chosen].name
-
-    # Nuclear fallback
-    return "bandit_thug", ENEMY_TEMPLATES["bandit_thug"].name
-
-
 def _get_active_combat(session) -> CombatState | None:
     """Return the session's active combat, or None. Clears unusable combat data."""
     raw = session.world_state.get("combat")
@@ -1809,9 +1708,12 @@ def _build_combat_payload(session, combat: CombatState) -> dict:
 
     combat_engine: CombatEngine = app.state.combat_engine
     enemy = combat.enemies[0]
-    template = ENEMY_TEMPLATES.get(combat.enemy_key) or next(
-        (t for t in ENEMY_TEMPLATES.values() if t.name == enemy.name), None
-    )
+    tier = combat.enemy_tier
+    if not tier:  # combats stored before enemy_tier existed
+        template = ENEMY_TEMPLATES.get(combat.enemy_key) or next(
+            (t for t in ENEMY_TEMPLATES.values() if t.name == enemy.name), None
+        )
+        tier = template.tier if template else 1
     player = session.player
     return {
         "combat_id": combat.combat_id,
@@ -1822,6 +1724,8 @@ def _build_combat_payload(session, combat: CombatState) -> dict:
             "armor": enemy.armor,
             "attack_bonus": enemy.attack_bonus,
             "abilities": enemy.abilities,
+            "threat": combat.enemy_profile.get("threat", "standard"),
+            "description": combat.enemy_profile.get("description", ""),
         },
         "player": {
             "name": player.name,
@@ -1838,29 +1742,35 @@ def _build_combat_payload(session, combat: CombatState) -> dict:
             {"name": i.name, "type": i.item_type, "hp_restore": i.hp_restore, "mana_restore": i.mana_restore}
             for i in player.inventory
         ],
-        "enemy_tier": template.tier if template else 1,
+        "enemy_tier": tier,
     }
 
 
-def _choose_enemy_key(session, narration: str) -> tuple[str | None, str]:
-    """Pick the enemy the narrator named, else a context-appropriate fallback. Returns (key, source)."""
-    _, enemy_key = _extract_enemy_from_narration(narration, session.player.level)
-    if enemy_key:
-        return enemy_key, "narrator"
-    logger.info("Narrator didn't name a recognizable enemy — using contextual fallback")
-    fallback_key, _ = _fallback_enemy(session.world_state, session.player.level)
-    return fallback_key, "fallback"
+async def _start_combat(session, narration: str) -> tuple[dict, str]:
+    """Design the enemy from the narration, record the encounter, and return (payload, source).
 
-
-def _start_combat(session, enemy_key: str, narration: str, source: str) -> dict:
-    """Create the encounter, record it on the session, and return the client payload."""
+    The enemy's name comes from what the narrator described; its stats come from
+    an archetype/threat preset (see engines/enemy_designer.py).
+    """
+    designed = await design_enemy(
+        getattr(app.state, "enemy_designer", None),
+        narration=narration,
+        world_state=session.world_state,
+        player_level=session.player.level,
+    )
     combat_engine: CombatEngine = app.state.combat_engine
     combat = combat_engine.initiate_combat(
         player_state=session.player,
         narrative_context=narration[-200:],
-        enemy_key=enemy_key,
-        enemy_tier=min(5, max(1, session.player.level)),
+        enemy_key=designed.enemy_key,
+        enemy_template=designed.template,
     )
+    combat.enemy_profile = {
+        "archetype": designed.archetype,
+        "threat": designed.threat,
+        "source": designed.source,
+        "description": designed.description,
+    }
     enemy = combat.enemies[0]
     world = session.world_state
     world["combat"] = combat.model_dump()
@@ -1868,8 +1778,11 @@ def _start_combat(session, enemy_key: str, narration: str, source: str) -> dict:
     world["turns_since_combat"] = 0
     world["combat_tension"] = 0
     world["pending_combat"] = False
-    logger.info(f"Combat started ({source}): {enemy.name} [{combat.enemy_key}] combat_id={combat.combat_id}")
-    return _build_combat_payload(session, combat)
+    logger.info(
+        f"Combat started ({designed.source}): {enemy.name} "
+        f"[{designed.archetype}/{designed.threat}, tier {combat.enemy_tier}, hp {enemy.max_hp}, armor {enemy.armor}]"
+    )
+    return _build_combat_payload(session, combat), designed.source
 
 
 def _check_player_death(session) -> tuple[bool, str]:

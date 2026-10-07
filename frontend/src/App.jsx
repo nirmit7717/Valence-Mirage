@@ -23,6 +23,12 @@ export default function GameApp({ campaignId }) {
 
   const themeData = THEMES[game.theme] || THEMES.default;
 
+  // Lock page scrolling only while the full-screen game view is mounted.
+  useEffect(() => {
+    document.body.classList.add('game-active');
+    return () => document.body.classList.remove('game-active');
+  }, []);
+
   // Hydrate from campaign ID on mount
   useEffect(() => {
     if (campaignId && !game.sessionId) {
@@ -118,7 +124,7 @@ export default function GameApp({ campaignId }) {
             inputDisabled={game.gameOver}
           />
           <CombatOverlay combat={game.combat} onResolve={game.resolveCombat} animationsEnabled={animationsEnabled} />
-          <CampaignEndOverlay show={game.campaignEnded} victory={game.victory} gameOver={game.gameOver} />
+          <CampaignEndOverlay show={game.campaignEnded} victory={game.victory} gameOver={game.gameOver} sessionId={game.sessionId} />
           <LoadingOverlay show={game.loading} hasRoll={false} />
         </>
       )}

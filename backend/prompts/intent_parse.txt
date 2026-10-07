@@ -28,6 +28,11 @@ RULES:
   - true (ROLL NEEDED) for: Attempting to bypass a danger, using stealth, engaging in strenuous physical feats, persuading reluctant NPCs, attacking, casting a spell, or interacting with a trap/mechanism.
   - RULE OF THUMB: If failing the action would realistically result in damage, alert enemies, or lose a critical opportunity, set this to TRUE. Otherwise, set it to FALSE.
 - suggested_choices: ONLY populate if the action is clearly the player choosing from presented options (e.g., "I choose the left path" or "option 1"). Otherwise leave as empty array [].
+- relevance: CRITICAL FIELD. Does this action make sense for the player character RIGHT NOW, inside this campaign's world and the current scene? Use the context (setting, location, situation, current story beat).
+  - "relevant": engages with the current scene, story beat, characters, objects, threats, or objective — or is a reasonable in-world action (exploring, talking, fighting, resting, using gear, moving on). Bold, unlikely or risky in-world attempts are still relevant; the dice decide those.
+  - "tangential": possible in this world, but ignores what is happening and wanders away from the scene's focus (e.g., starting an unrelated hobby in the middle of a chase).
+  - "off_topic": breaks the setting or the fiction, or has nothing to do with the game: real-world or out-of-setting things (a smartphone, pizza delivery or a TV show in a medieval world), talking to the game, AI or narrator, meta-gaming or rule-changing requests, or nonsense unrelated to the scene.
+  Judge against THIS setting: in a cyberpunk city hacking a terminal is relevant; in a medieval fantasy world checking a smartphone is off_topic.
 
-OUTPUT: JSON object with keys: action_type, description, scale, risk, target, relevant_stat, uses_resource, resource_cost, requires_roll, suggested_choices
+OUTPUT: JSON object with keys: action_type, description, scale, risk, target, relevant_stat, uses_resource, resource_cost, requires_roll, suggested_choices, relevance
 No explanation. No markdown. Just the JSON.
