@@ -27,7 +27,9 @@ CREATE TABLE IF NOT EXISTS sessions (
     world_state_json TEXT NOT NULL,
     turn_number INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL
+    updated_at TEXT NOT NULL,
+    owner_user_id TEXT,
+    guest_token_hash TEXT
 );
 
 CREATE TABLE IF NOT EXISTS turns (
@@ -98,8 +100,54 @@ class Database:
         self.db = await aiosqlite.connect(DB_PATH)
         self.db.row_factory = aiosqlite.Row
         await self.db.executescript(SCHEMA)
+        await self._migrate()
         await self.db.commit()
         logger.info(f"Database connected: {DB_PATH}")
+
+    async def _migrate(self):
+        """Add columns introduced after a database was created. Safe to run every startup."""
+        cursor = await self.db.execute("PRAGMA table_info(sessions)")
+        columns = {row["name"] for row in await cursor.fetchall()}
+        for column in ("owner_user_id", "guest_token_hash"):
+            if column not in columns:
+                await self.db.execute(f"ALTER TABLE sessions ADD COLUMN {column} TEXT")
+                logger.info(f"Migrated sessions table: added {column}")
+        await self.db.execute("CREATE INDEX IF NOT EXISTS idx_sessions_owner ON sessions(owner_user_id)")
+
+    async def backfill_session_owners(self, admin_user_id: str | None) -> int:
+        """Give every session without an owner or guest token an owner.
+
+        Uses the user id older versions stored in world_state when present,
+        otherwise the admin account. Returns the number of sessions updated.
+        """
+        cursor = await self.db.execute(
+            "SELECT session_id, world_state_json FROM sessions "
+            "WHERE owner_user_id IS NULL AND guest_token_hash IS NULL"
+        )
+        rows = await cursor.fetchall()
+        if not rows:
+            return 0
+        cursor = await self.db.execute("SELECT id FROM users")
+        known_users = {row["id"] for row in await cursor.fetchall()}
+
+        updated = 0
+        for row in rows:
+            try:
+                stored_user = json.loads(row["world_state_json"]).get("user_id")
+            except (json.JSONDecodeError, AttributeError):
+                stored_user = None
+            owner = stored_user if stored_user in known_users else admin_user_id
+            if not owner:
+                continue
+            await self.db.execute(
+                "UPDATE sessions SET owner_user_id = ? WHERE session_id = ?", (owner, row["session_id"])
+            )
+            updated += 1
+        await self.db.commit()
+        if updated < len(rows):
+            logger.warning(f"{len(rows) - updated} sessions have no owner and no admin to assign them to")
+        logger.info(f"Assigned owners to {updated} legacy sessions")
+        return updated
 
     async def close(self):
         if self.db:
@@ -114,17 +162,21 @@ class Database:
         world_json = json.dumps(session.world_state)
 
         await self.db.execute(
-            """INSERT INTO sessions (session_id, player_id, player_name, player_json, world_state_json, turn_number, created_at, updated_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """INSERT INTO sessions (session_id, player_id, player_name, player_json, world_state_json, turn_number,
+                                     created_at, updated_at, owner_user_id, guest_token_hash)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                ON CONFLICT(session_id) DO UPDATE SET
                    player_json = excluded.player_json,
                    world_state_json = excluded.world_state_json,
                    turn_number = excluded.turn_number,
-                   updated_at = excluded.updated_at
+                   updated_at = excluded.updated_at,
+                   owner_user_id = COALESCE(excluded.owner_user_id, sessions.owner_user_id),
+                   guest_token_hash = COALESCE(excluded.guest_token_hash, sessions.guest_token_hash)
             """,
             (session.session_id, session.player.player_id, session.player.name,
              player_json, world_json, session.turn_number,
-             session.created_at.isoformat(), now),
+             session.created_at.isoformat(), now,
+             session.owner_user_id, session.guest_token_hash),
         )
         await self.db.commit()
         logger.debug(f"Session saved: {session.session_id} (turn {session.turn_number})")
@@ -148,13 +200,18 @@ class Database:
             turn_history=turns,
             turn_number=session_row["turn_number"],
             created_at=datetime.fromisoformat(session_row["created_at"]),
+            owner_user_id=session_row["owner_user_id"],
+            guest_token_hash=session_row["guest_token_hash"],
         )
 
-    async def list_sessions(self) -> list[dict]:
-        rows = await self.db.execute(
-            """SELECT session_id, player_name, turn_number, created_at, updated_at
-               FROM sessions ORDER BY updated_at DESC"""
-        )
+    async def list_sessions(self, owner_user_id: str | None = None) -> list[dict]:
+        """All sessions, or only those owned by ``owner_user_id``."""
+        query = "SELECT session_id, player_name, turn_number, created_at, updated_at FROM sessions"
+        params: tuple = ()
+        if owner_user_id is not None:
+            query += " WHERE owner_user_id = ?"
+            params = (owner_user_id,)
+        rows = await self.db.execute(query + " ORDER BY updated_at DESC", params)
         results = []
         async for row in rows:
             results.append({

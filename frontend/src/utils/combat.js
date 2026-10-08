@@ -146,6 +146,23 @@ export function enemyIntro(name) {
   return `⚔️ ${(name || 'An enemy').trim()} appears!`;
 }
 
+// Body for POST /session/:id/combat/resolve. The server checks it against the stored fight.
+export function buildResolvePayload(result, state) {
+  return {
+    combat_id: state.combat_id || '',
+    result,
+    player_hp: result === 'defeat' ? 0 : Math.max(0, Math.round(state.player.hp)),
+    player_mana: Math.max(0, Math.round(state.player.mana)),
+    enemy_name: state.enemy.name,
+    items_used: [...(state.items_used || [])],
+    combat_log: (state.logEntries || []).slice(-12).map(message => ({
+      actor: /\byou\b/i.test(message) ? 'player' : 'enemy',
+      message: message.replace(/^(?:⚔️|🧪|⚡|🏆|💀|💫|💨)+\s*/u, ''),
+    })),
+    turns_taken: Math.max(1, state.turn || 1),
+  };
+}
+
 export function createCombatState(combatData) {
   return {
     enemy: { ...combatData.enemy, status_effects: [] },
@@ -160,6 +177,9 @@ export function createCombatState(combatData) {
     turn: 1,
     resolved: false,
     enemy_tier: combatData.enemy_tier || 1,
+    // Sent back to the server, which checks the result against the stored encounter.
+    combat_id: combatData.combat_id || '',
+    items_used: [],
   };
 }
 
@@ -198,8 +218,16 @@ export function resolvePlayerAttack(state, weaponName, dice) {
   };
 }
 
+// Who a support/defend ability's status effect lands on. Older payloads have no
+// `target`; debuffs (weaken/stun) on a support ability are meant for the enemy.
+function abilityTargetsEnemy(ability) {
+  if (ability.target) return ability.target === 'enemy';
+  return ['weaken', 'stun'].includes((ability.status_effect || '').toLowerCase());
+}
+
 export function resolvePlayerSkill(state, ability) {
-  state.player.mana -= ability.mana_cost;
+  // The only place a skill's mana cost is paid.
+  state.player.mana = Math.max(0, state.player.mana - ability.mana_cost);
 
   // Support / defend
   if (ability.ability_type === 'support' || ability.ability_type === 'defend') {
@@ -209,8 +237,13 @@ export function resolvePlayerSkill(state, ability) {
       return { log: `You cast ${ability.name} and restore ${heal} HP!`, type: 'player', damage: { target: 'player', amount: heal, heal: true } };
     }
     if (ability.status_effect) {
+      const icon = getStatusIcon(ability.status_effect);
+      if (abilityTargetsEnemy(ability)) {
+        applyEffect(state.enemy, ability.status_effect, ability.status_duration || 2);
+        return { log: `${icon} You use ${ability.name}! ${state.enemy.name} is afflicted with ${ability.status_effect}.`, type: 'player', flash: 'enemy' };
+      }
       applyEffect(state.player, ability.status_effect, ability.status_duration || 2);
-      return { log: `${getStatusIcon(ability.status_effect)} You use ${ability.name}! Gained ${ability.status_effect}.`, type: 'player' };
+      return { log: `${icon} You use ${ability.name}! Gained ${ability.status_effect}.`, type: 'player' };
     }
     return { log: `You use ${ability.name}!`, type: 'player' };
   }
@@ -260,21 +293,27 @@ export function resolvePlayerItem(state, itemName, hpRestore, manaRestore) {
     state.player.mana = Math.min(state.player.max_mana, state.player.mana + manaRestore);
     results.push({ log: `You use ${itemName} and restore ${manaRestore} mana!`, type: 'player' });
   }
-  // Remove item
+  // Remove item, and record it so the server removes it from the saved inventory too
   const idx = state.inventory.findIndex(i => i.name === itemName && i.type === 'consumable');
-  if (idx !== -1) state.inventory.splice(idx, 1);
+  if (idx !== -1) {
+    state.inventory.splice(idx, 1);
+    state.items_used = [...(state.items_used || []), itemName];
+  }
   return results;
 }
 
 export function resolveEnemyTurn(state) {
-  // Phase 1: Tick effects on both
+  // Phase 1: Is the enemy stunned? Checked before effects tick, otherwise a
+  // one-turn stun expires during the tick and never stops a single turn.
+  const stunned = !canAct(state.enemy);
+
+  // Phase 2: Tick effects on both (damage over time, durations)
   tickEffects(state.enemy, () => {});
   tickEffects(state.player, () => {});
 
   if (state.enemy.hp <= 0) return { ended: true, victory: true };
 
-  // Phase 2: Can enemy act?
-  if (!canAct(state.enemy)) {
+  if (stunned) {
     state.turn++;
     return { log: `💫 ${state.enemy.name} is stunned and cannot act!`, type: 'system', diceInfo: null };
   }

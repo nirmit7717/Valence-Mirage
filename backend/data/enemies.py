@@ -219,3 +219,12 @@ def roll_damage(dice_str: str, rng=None) -> int:
     sides = int(match.group(2))
     modifier = int(match.group(3) or 0)
     return sum(r.randint(1, sides) for _ in range(count)) + modifier
+
+
+def max_damage(dice_str: str) -> int:
+    """Highest value a dice expression can roll, e.g. '2d8+3' -> 19. 0 if unparseable."""
+    import re
+    match = re.match(r"(\d+)d(\d+)([+-]\d+)?", dice_str or "")
+    if not match:
+        return 0
+    return int(match.group(1)) * int(match.group(2)) + int(match.group(3) or 0)

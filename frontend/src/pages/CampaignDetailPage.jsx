@@ -4,6 +4,40 @@ import * as api from '../api';
 import { CLASS_DATA } from '../data/classes';
 import PageLoader from '../components/PageLoader';
 
+// Turn records come straight from the backend Turn model:
+//   { turn_number, player_input, roll, outcome: { result, roll, threshold, narration, ... } }
+// `outcome` is an object — reading it as a string is what used to crash this page.
+function describeTurn(turn) {
+  const outcome = turn.outcome && typeof turn.outcome === 'object' ? turn.outcome : {};
+  const result = outcome.result || '';
+  const roll = outcome.roll || turn.roll || 0;
+  return {
+    number: turn.turn_number,
+    input: turn.player_input || '',
+    result,
+    rolled: roll > 0,
+    roll,
+    threshold: outcome.threshold || 0,
+    narration: stripChoices(outcome.narration || ''),
+    success: result.includes('success'),
+    combat: (turn.intent?.action_type || '') === 'attack' || result === 'player_death',
+  };
+}
+
+function stripChoices(text) {
+  return text.replace(/^\s*(?:→|->).*$/gm, '').trim();
+}
+
+function resultLabel(result) {
+  return result ? result.replace(/_/g, ' ') : '—';
+}
+
+const ENDINGS = {
+  victory: { label: '🏆 Victory', className: 'vm-badge-success' },
+  defeat: { label: '💀 Defeat', className: 'vm-badge-danger' },
+  lost_focus: { label: '🌫️ Lost Focus', className: 'vm-badge-danger' },
+};
+
 export default function CampaignDetailPage() {
   const { id } = useParams();
   const navigate = useNavigate();
@@ -11,20 +45,22 @@ export default function CampaignDetailPage() {
   const [session, setSession] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
+  const [expanded, setExpanded] = useState({});
 
   useEffect(() => {
-    Promise.all([
-      api.getSession(id).catch(() => null),
-      api.getSessionHistory(id).catch(() => []),
-    ]).then(([sessionData, historyData]) => {
-      if (!sessionData) {
-        setError('Campaign not found.');
-      } else {
+    let cancelled = false;
+    Promise.all([api.getSession(id), api.getSessionHistory(id).catch(() => [])])
+      .then(([sessionData, historyData]) => {
+        if (cancelled) return;
         setSession(sessionData);
-        setTurns(historyData.turns || historyData || []);
-      }
-      setLoading(false);
-    });
+        setTurns(Array.isArray(historyData) ? historyData.map(describeTurn) : []);
+      })
+      .catch((e) => {
+        if (cancelled) return;
+        setError(e.status === 404 ? 'Campaign not found, or it belongs to another account.' : `Couldn't load this campaign: ${e.message}`);
+      })
+      .finally(() => { if (!cancelled) setLoading(false); });
+    return () => { cancelled = true; };
   }, [id]);
 
   if (loading) return <div className="vm-page-center"><PageLoader text="Loading campaign..." /></div>;
@@ -43,17 +79,15 @@ export default function CampaignDetailPage() {
   const cls = player.character_class || '—';
   const clsData = CLASS_DATA[cls];
   const turnCount = session?.turn_number || turns.length;
-  const ended = ws.campaign_ended;
-  const isVictory = ws.campaign_result ? ws.campaign_result === 'victory' : ws.status !== 'failed';
+  const ended = Boolean(ws.campaign_ended);
+  const outcome = ws.campaign_result || (ws.status === 'failed' ? 'defeat' : ws.warning_count >= 3 ? 'lost_focus' : 'victory');
+  const ending = ENDINGS[outcome] || ENDINGS.victory;
+  const opening = stripChoices(ws.opening_narration || '');
 
-  // Extract unique enemies from turn history
-  const enemies = [...new Set(
-    turns.map(t => t.enemy_name || t.combat_enemy).filter(Boolean)
-  )];
+  const totalRolls = turns.filter(t => t.rolled).length;
+  const successes = turns.filter(t => t.rolled && t.success).length;
 
-  // Summary stats
-  const totalRolls = turns.filter(t => t.roll || t.dice_result).length;
-  const combats = turns.filter(t => t.combat_enemy || t.combat_started).length;
+  const toggle = (key) => setExpanded(prev => ({ ...prev, [key]: !prev[key] }));
 
   return (
     <div className="vm-page">
@@ -73,12 +107,11 @@ export default function CampaignDetailPage() {
             <span>{turnCount} turns</span>
             <span>{session?.created_at ? new Date(session.created_at).toLocaleDateString() : ''}</span>
           </div>
+          {campaign.premise && <p className="campaign-detail-premise">{campaign.premise}</p>}
         </div>
         <div className="campaign-detail-actions">
           {ended ? (
-            <span className={`vm-badge vm-badge-lg ${isVictory ? 'vm-badge-success' : 'vm-badge-danger'}`}>
-              {isVictory ? '🏆 Victory' : '💀 Defeat'}
-            </span>
+            <span className={`vm-badge vm-badge-lg ${ending.className}`}>{ending.label}</span>
           ) : (
             <button className="auth-btn" onClick={() => navigate(`/campaign/${id}`)}>Resume Campaign</button>
           )}
@@ -96,57 +129,77 @@ export default function CampaignDetailPage() {
           <span className="campaign-summary-label">Dice Rolls</span>
         </div>
         <div className="campaign-summary-stat">
-          <span className="campaign-summary-val">{combats}</span>
-          <span className="campaign-summary-label">Combats</span>
+          <span className="campaign-summary-val">{successes}</span>
+          <span className="campaign-summary-label">Successes</span>
         </div>
         <div className="campaign-summary-stat">
-          <span className="campaign-summary-val">{enemies.length}</span>
-          <span className="campaign-summary-label">Unique Enemies</span>
+          <span className="campaign-summary-val">{player.level || 1}</span>
+          <span className="campaign-summary-label">Final Level</span>
         </div>
       </div>
-
-      {/* Enemies encountered */}
-      {enemies.length > 0 && (
-        <div className="vm-section">
-          <h2 className="vm-section-title">Enemies Encountered</h2>
-          <div className="role-gear">
-            {enemies.map(e => <span key={e} className="role-gear-tag">👹 {e}</span>)}
-          </div>
-        </div>
-      )}
 
       {/* Turn timeline */}
       <div className="vm-section">
         <h2 className="vm-section-title">Journey Timeline</h2>
+        {opening && (
+          <div className="timeline">
+            <div className="timeline-item">
+              <div className="timeline-marker"><span className="timeline-dot">📜</span></div>
+              <div className="timeline-content">
+                <div className="timeline-header"><span className="timeline-turn">The Beginning</span></div>
+                <div className="timeline-narration">
+                  {expanded.opening || opening.length <= 280 ? opening : `${opening.slice(0, 280)}…`}
+                </div>
+                {opening.length > 280 && (
+                  <button className="vm-link timeline-toggle" onClick={() => toggle('opening')}>
+                    {expanded.opening ? 'Show less' : 'Read more'}
+                  </button>
+                )}
+              </div>
+            </div>
+          </div>
+        )}
         {turns.length > 0 ? (
           <div className="timeline">
             {turns.map((t, i) => {
-              const hasCombat = t.combat_enemy || t.combat_started;
-              const rollVal = t.roll || t.dice_result;
-              const isSuccess = t.outcome?.includes('success');
+              const key = `t${t.number}-${i}`;
+              const long = t.narration.length > 280;
               return (
-                <div key={i} className={`timeline-item ${hasCombat ? 'timeline-combat' : ''}`}>
+                <div key={key} className={`timeline-item ${t.combat ? 'timeline-combat' : ''}`}>
                   <div className="timeline-marker">
-                    <span className="timeline-dot">{hasCombat ? '⚔️' : `T${t.turn_number || i + 1}`}</span>
+                    <span className="timeline-dot">{t.combat ? '⚔️' : `T${t.number || i + 1}`}</span>
                     {i < turns.length - 1 && <div className="timeline-line" />}
                   </div>
                   <div className="timeline-content">
                     <div className="timeline-header">
-                      <span className="timeline-turn">Turn {t.turn_number || i + 1}</span>
-                      {rollVal && (
-                        <span className={`timeline-badge ${isSuccess ? 'vm-badge-success' : ''}`}>
-                          🎲 {rollVal} → {t.outcome || '—'}
+                      <span className="timeline-turn">Turn {t.number || i + 1}</span>
+                      {t.rolled ? (
+                        <span className={`timeline-badge ${t.success ? 'vm-badge-success' : ''}`}>
+                          🎲 {t.roll} vs {t.threshold}+ → {resultLabel(t.result)}
                         </span>
+                      ) : (
+                        <span className="timeline-badge">📖 {resultLabel(t.result)}</span>
                       )}
                     </div>
-                    {t.player_input && <div className="timeline-input">"{t.player_input}"</div>}
-                    {hasCombat && <div className="timeline-combat-label">Combat: {t.combat_enemy || 'Enemy'}</div>}
+                    {t.input && <div className="timeline-input">"{t.input}"</div>}
+                    {t.narration && (
+                      <>
+                        <div className="timeline-narration">
+                          {expanded[key] || !long ? t.narration : `${t.narration.slice(0, 280)}…`}
+                        </div>
+                        {long && (
+                          <button className="vm-link timeline-toggle" onClick={() => toggle(key)}>
+                            {expanded[key] ? 'Show less' : 'Read more'}
+                          </button>
+                        )}
+                      </>
+                    )}
                   </div>
                 </div>
               );
             })}
           </div>
-        ) : (
+        ) : !opening && (
           <div className="vm-empty-state">
             <p>No turn history available for this campaign.</p>
           </div>

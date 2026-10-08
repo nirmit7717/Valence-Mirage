@@ -3,7 +3,7 @@ import { useTypewriter } from '../utils/typewriter';
 import { chunkNarration } from '../utils/chunker';
 import * as tts from '../utils/tts';
 
-export default function NarrativeCard({ narration, onChoice, onDismiss, animationsEnabled, textSpeed, inputDisabled }) {
+export default function NarrativeCard({ narration, onChoice, onDismiss, animationsEnabled, textSpeed, inputDisabled, onOpenStory, storyCount = 0 }) {
   const [phase, setPhase] = useState('hidden'); // hidden | fading-in | visible | fading-out
   const [displayedText, setDisplayedText] = useState('');
   const [chunkIndex, setChunkIndex] = useState(0);
@@ -94,6 +94,18 @@ export default function NarrativeCard({ narration, onChoice, onDismiss, animatio
     }
   }, [chunkIndex, chunks, narration, animationsEnabled, typewriterRender, cancel, onDismiss]);
 
+  // Step back to the previous part of a long, multi-part scene.
+  const handleBack = useCallback(() => {
+    if (chunkIndex === 0) return;
+    tts.stop();
+    cancel();
+    const prevIdx = chunkIndex - 1;
+    setChunkIndex(prevIdx);
+    setShowActions(false);
+    setIsTyping(false);
+    setDisplayedText(chunks[prevIdx]); // already read — show it in full, no typing
+  }, [chunkIndex, chunks, cancel]);
+
   const handleChoice = useCallback((choice) => {
     tts.stop();
     cancel();
@@ -131,6 +143,20 @@ export default function NarrativeCard({ narration, onChoice, onDismiss, animatio
             <div className="nc-chunk-ind">— {chunkIndex + 1} / {chunks.length} —</div>
           )}
         </div>
+
+        {/* Going back: earlier parts of this scene, or earlier scenes of the story */}
+        {(chunkIndex > 0 || (onOpenStory && storyCount > 1)) && (
+          <div className="nc-nav" onClick={(e) => e.stopPropagation()}>
+            {chunkIndex > 0 ? (
+              <button className="nc-nav-btn" onClick={handleBack} aria-label="Previous part of this scene">‹ Back</button>
+            ) : <span />}
+            {onOpenStory && storyCount > 1 && (
+              <button className="nc-nav-btn" onClick={() => { tts.stop(); cancel(); onOpenStory(); }}>
+                📖 Story So Far
+              </button>
+            )}
+          </div>
+        )}
 
         {/* Actions */}
         <div className="nc-actions">

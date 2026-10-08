@@ -10,6 +10,7 @@ import LoadingOverlay from './components/LoadingOverlay';
 import CampaignEndOverlay from './components/CampaignEndOverlay';
 import DiceRoll from './components/DiceRoll';
 import SettingsPanel from './components/SettingsPanel';
+import StoryLog from './components/StoryLog';
 
 injectAmbienceCSS();
 
@@ -20,6 +21,8 @@ export default function GameApp({ campaignId }) {
   const [animationsEnabled, setAnimationsEnabled] = useState(true);
   const [textSpeed, setTextSpeed] = useState(20);
   const [restoreError, setRestoreError] = useState(null);
+  const [storyOpen, setStoryOpen] = useState(false);
+  const closeStory = useCallback(() => setStoryOpen(false), []);
 
   const themeData = THEMES[game.theme] || THEMES.default;
 
@@ -122,7 +125,10 @@ export default function GameApp({ campaignId }) {
             animationsEnabled={animationsEnabled}
             textSpeed={textSpeed}
             inputDisabled={game.gameOver}
+            onOpenStory={() => setStoryOpen(true)}
+            storyCount={game.storyLog.length}
           />
+          <StoryLog open={storyOpen} entries={game.storyLog} onClose={closeStory} />
           <CombatOverlay combat={game.combat} onResolve={game.resolveCombat} animationsEnabled={animationsEnabled} />
           <CampaignEndOverlay show={game.campaignEnded} victory={game.victory} gameOver={game.gameOver} sessionId={game.sessionId} />
           <LoadingOverlay show={game.loading} hasRoll={false} />

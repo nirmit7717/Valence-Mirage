@@ -1,11 +1,14 @@
 """Valence Mirage — FastAPI Game Server (Phase 3.6: Combat Overhaul)"""
 
+import asyncio
 import logging
+import math
 import re
+from collections import Counter
 from contextlib import asynccontextmanager
 
 # pyrefly: ignore [missing-import]
-from fastapi import FastAPI, HTTPException, Depends
+from fastapi import FastAPI, HTTPException, Depends, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
@@ -59,14 +62,18 @@ async def lifespan(app: FastAPI):
     db = Database()
     await db.connect()
     app.state.db = db
+    # Per-session locks: serialize combat resolution so a reward can't be claimed twice.
+    # In-process only — a multi-worker deployment would need a database-level guard.
+    app.state.session_locks = {}
+
+    # Admin must exist before legacy sessions are assigned owners
+    await _ensure_admin(db)
+    await _assign_legacy_owners(db)
 
     # Restore in-memory sessions from DB
     await _restore_sessions(app)
 
     logger.info("Valence Mirage v0.6.2 initialized — engines + DB + vector search + NPCs + local combat + context-aware combat")
-
-    # Ensure admin user exists
-    await _ensure_admin(db)
 
     yield
 
@@ -87,6 +94,12 @@ async def _ensure_admin(db: Database):
         admin_pass = os.getenv("ADMIN_PASSWORD", "admin123")
         await db.create_user("admin", hash_password(admin_pass), "admin")
         logger.info("Default admin user created")
+
+
+async def _assign_legacy_owners(db: Database):
+    """Sessions saved before ownership existed: use their stored user, else admin."""
+    admin = await db.get_user_by_username("admin")
+    await db.backfill_session_owners(admin["id"] if admin else None)
 
 
 async def _restore_sessions(app):
@@ -116,9 +129,9 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-from auth import create_access_token, hash_password, verify_password, get_current_user, require_auth, require_admin
-from config import JWT_SECRET as SECRET_KEY, JWT_ALGORITHM as ALGORITHM
+from auth import create_access_token, hash_password, verify_password, get_optional_user_strict, require_auth, require_admin
 from models.user import UserCreate, UserLogin, UserResponse, TokenResponse, TesterRequest
+from session_access import get_authorized_session, hash_guest_token, new_guest_token
 import os
 
 def extract_choices(narration: str) -> list[str]:
@@ -138,6 +151,8 @@ def clean_narration(narration: str) -> str:
     return parts[0].strip() if parts else narration.strip()
 
 
+
+from typing import Literal
 
 from pydantic import BaseModel, Field
 
@@ -159,13 +174,19 @@ class ActionRequest(BaseModel):
 
 
 class CombatResolveRequest(BaseModel):
-    """Client sends final combat result after local resolution."""
-    result: str = Field(..., description="victory or defeat")
-    player_hp: int = Field(...)
-    player_mana: int = Field(...)
-    enemy_name: str = Field(...)
-    combat_log: list[dict] = Field(default_factory=list, description="Full combat log entries")
-    turns_taken: int = Field(default=1)
+    """Client sends final combat result after local resolution.
+
+    Combat runs in the browser, so every field is checked against the encounter
+    the server stored when the fight began (see _validate_combat_result).
+    """
+    combat_id: str = Field(..., min_length=1, max_length=64)
+    result: Literal["victory", "defeat"]
+    player_hp: int = Field(..., ge=0)
+    player_mana: int = Field(..., ge=0)
+    enemy_name: str = Field(..., max_length=100)
+    items_used: list[str] = Field(default_factory=list, max_length=20, description="Consumables used, by name")
+    combat_log: list[dict] = Field(default_factory=list, max_length=100, description="Combat log entries")
+    turns_taken: int = Field(default=1, ge=1, le=200)
 
 
 class ActionResponse(BaseModel):
@@ -252,23 +273,24 @@ async def health():
 
 
 @app.post("/session/new", response_model=dict)
-async def create_session(req: NewSessionRequest = NewSessionRequest(), authorization: str | None = None):
+async def create_session(
+    req: NewSessionRequest = NewSessionRequest(),
+    user: dict | None = Depends(get_optional_user_strict),
+):
     sm: StateManager = app.state.state_manager
     planner: CampaignPlanner = app.state.campaign_planner
-    npc_engine: NPCEngine = app.state.npc_engine
     db: Database = app.state.db
 
     # Create session
     session = sm.create_session(player_name=req.player_name)
 
-    # Optionally associate with logged-in user
-    if authorization and authorization.startswith("Bearer "):
-        try:
-            from jose import jwt as jose_jwt
-            payload = jose_jwt.decode(authorization[7:], SECRET_KEY, algorithms=[ALGORITHM])
-            session.world_state["user_id"] = payload.get("sub")
-        except Exception:
-            pass  # Auth optional
+    # Ownership: logged-in users own the session; guests get a secret token returned once.
+    guest_token = None
+    if user:
+        session.owner_user_id = user["id"]
+    else:
+        guest_token = new_guest_token()
+        session.guest_token_hash = hash_guest_token(guest_token)
 
     # Apply character class
     from models.character import CharacterClass, CLASS_STATS, CLASS_ABILITIES, CLASS_STARTING_GEAR, CLASS_DESCRIPTIONS
@@ -300,10 +322,9 @@ async def create_session(req: NewSessionRequest = NewSessionRequest(), authoriza
     session.world_state["class_description"] = CLASS_DESCRIPTIONS.get(cls, "")
 
     # Load profile for adaptive campaign weighting before blueprint generation
-    user_id = session.world_state.get("user_id")
     player_profile = None
-    if user_id:
-        player_profile = await db.load_profile(user_id)
+    if session.owner_user_id:
+        player_profile = await db.load_profile(session.owner_user_id)
     session.world_state["player_profile"] = player_profile.model_dump() if player_profile else None
 
     # Generate campaign blueprint with template
@@ -371,7 +392,7 @@ async def create_session(req: NewSessionRequest = NewSessionRequest(), authoriza
 
     logger.info(f"New session: {session.session_id} — '{req.player_name}' — Campaign: {blueprint.title}")
 
-    return {
+    response = {
         "session_id": session.session_id,
         "player": session.player.model_dump(),
         "character_class": cls.value,
@@ -394,38 +415,28 @@ async def create_session(req: NewSessionRequest = NewSessionRequest(), authoriza
         "opening_narration": clean_narration(opening_narration),
         "choices": extract_choices(opening_narration),
     }
+    if guest_token:
+        # Shown once; the client must send it back as X-Session-Token on every session call.
+        response["guest_token"] = guest_token
+    return response
 
 
 @app.get("/session/{session_id}", response_model=GameSession)
-async def get_session(session_id: str):
-    sm: StateManager = app.state.state_manager
-    session = sm.get_session(session_id)
-    if not session:
-        db: Database = app.state.db
-        session = await db.load_session(session_id)
-        if session:
-            sm._sessions[session_id] = session
-        else:
-            raise HTTPException(status_code=404, detail="Session not found")
+async def get_session(session: GameSession = Depends(get_authorized_session)):
     return session
 
 
 @app.get("/session/{session_id}/hydrate")
-async def hydrate_session(session_id: str):
+async def hydrate_session(session: GameSession = Depends(get_authorized_session)):
     """Return full session state for frontend hydration after page refresh."""
-    sm: StateManager = app.state.state_manager
-    session = sm.get_session(session_id)
-    if not session:
-        db: Database = app.state.db
-        session = await db.load_session(session_id)
-        if session:
-            sm._sessions[session_id] = session
-        else:
-            raise HTTPException(status_code=404, detail="Session not found")
-
     campaign = session.world_state.get("campaign", {})
     combat_ws = session.world_state.get("combat")
     campaign_ended = session.world_state.get("campaign_ended", False)
+    active_combat = None if campaign_ended else _get_active_combat(session)
+    current_beat_title = None
+    if campaign:
+        current = app.state.campaign_planner.get_current_beat(CampaignBlueprint(**campaign))
+        current_beat_title = current.title if current else None
     opening_narration = session.world_state.get("opening_narration") or session.world_state.get("situation") or ""
     opening_choices = session.world_state.get("opening_choices") or extract_choices(opening_narration)
 
@@ -461,6 +472,11 @@ async def hydrate_session(session_id: str):
         "choices": opening_choices,
         "campaign_objective": session.world_state.get("campaign_objective", ""),
         "combat": combat_ws if combat_ws and not combat_ws.get("resolved", False) else None,
+        # Ready-to-play payload so a refresh mid-fight brings the combat screen back.
+        "combat_data": _build_combat_payload(session, active_combat) if active_combat else None,
+        # Story so far, for paging back through earlier narration after a refresh.
+        "story_log": _story_log(session),
+        "current_beat": current_beat_title,
         "campaign_ended": campaign_ended,
         "campaign_result": _campaign_result(session.world_state) if campaign_ended else None,
         "warning_count": session.world_state.get("warning_count", 0),
@@ -470,20 +486,24 @@ async def hydrate_session(session_id: str):
 
 
 @app.delete("/session/{session_id}")
-async def delete_session(session_id: str):
+async def delete_session(session: GameSession = Depends(get_authorized_session)):
+    """Delete a session. Access is checked before anything is removed."""
     sm: StateManager = app.state.state_manager
     db: Database = app.state.db
-    deleted = await db.delete_session(session_id)
+    session_id = session.session_id
+    await db.delete_session(session_id)
     sm.delete_session(session_id)
-    if not deleted:
-        raise HTTPException(status_code=404, detail="Session not found")
+    app.state.session_locks.pop(session_id, None)
     return {"detail": f"Session {session_id} deleted"}
 
 
 @app.get("/sessions", response_model=list[dict])
-async def list_sessions():
+async def list_sessions(user: dict = Depends(require_auth)):
+    """Your sessions; admins see every session."""
     db: Database = app.state.db
-    return await db.list_sessions()
+    if user.get("role") == "admin":
+        return await db.list_sessions()
+    return await db.list_sessions(owner_user_id=user["id"])
 
 
 def _is_campaign_complete(bp: CampaignBlueprint) -> bool:
@@ -511,18 +531,11 @@ def _get_total_beats(bp: CampaignBlueprint) -> int:
 
 
 @app.post("/session/{session_id}/action", response_model=ActionResponse)
-async def submit_action(session_id: str, req: ActionRequest):
+async def submit_action(req: ActionRequest, session: GameSession = Depends(get_authorized_session)):
     sm: StateManager = app.state.state_manager
     db: Database = app.state.db
     retriever: RuleRetriever = app.state.rule_retriever
-
-    session = sm.get_session(session_id)
-    if not session:
-        session = await db.load_session(session_id)
-        if session:
-            sm._sessions[session_id] = session
-        else:
-            raise HTTPException(status_code=404, detail="Session not found")
+    session_id = session.session_id
 
     planner: CampaignPlanner = app.state.campaign_planner
     parser: IntentParser = app.state.intent_parser
@@ -1196,109 +1209,42 @@ async def submit_action(session_id: str, req: ActionRequest):
 
 # ─── Combat Endpoints (Client-Side Resolution) ───
 
-@app.post("/session/{session_id}/combat/init")
-async def init_combat(session_id: str, enemy_tier: int = 1, enemy_key: str | None = None):
-    """Initiate a combat encounter. Returns all data for client-side resolution."""
-    sm: StateManager = app.state.state_manager
-    db: Database = app.state.db
-    combat_engine: CombatEngine = app.state.combat_engine
-
-    session = sm.get_session(session_id)
-    if not session:
-        session = await db.load_session(session_id)
-        if not session:
-            raise HTTPException(status_code=404, detail="Session not found")
-
-    context = session.world_state.get("situation", "")[:200]
-    
-    # Tier scales with player level
-    effective_tier = min(5, max(1, enemy_tier))
-    
-    combat = combat_engine.initiate_combat(
-        player_state=session.player,
-        enemy_tier=effective_tier,
-        enemy_key=enemy_key,
-        narrative_context=context,
-    )
-    session.world_state["combat"] = combat.model_dump()
-    session.world_state["turns_since_combat"] = 0
-    session.world_state["combat_tension"] = 0
-    
-    await db.save_session(session)
-
-    enemy = combat.enemies[0]
-    player_armor = combat_engine._calc_player_armor(session.player)
-    attack_bonus = combat_engine._calc_attack_bonus(session.player)
-
-    return {
-        "combat_id": combat.combat_id,
-        "enemy": {
-            "name": enemy.name,
-            "hp": enemy.hp,
-            "max_hp": enemy.max_hp,
-            "armor": enemy.armor,
-            "attack_bonus": enemy.attack_bonus,
-            "abilities": enemy.abilities,
-        },
-        "player": {
-            "name": session.player.name,
-            "hp": combat.player.hp,
-            "max_hp": combat.player.max_hp,
-            "mana": combat.player.mana,
-            "max_mana": combat.player.max_mana,
-            "armor": player_armor,
-            "attack_bonus": attack_bonus,
-            "status_effects": [],
-        },
-        "abilities": session.world_state.get("abilities", []),
-        "inventory": [{"name": i.name, "type": i.item_type, "hp_restore": getattr(i, "hp_restore", 0), "mana_restore": getattr(i, "mana_restore", 0)} for i in session.player.inventory],
-        "enemy_tier": effective_tier,
-        "message": f"A {enemy.name} appears! Prepare for battle!",
-    }
-
-
 @app.post("/session/{session_id}/combat/resolve")
-async def resolve_combat(session_id: str, req: CombatResolveRequest):
-    """Accept final combat result from client-side resolution.
-    
-    The client runs the entire combat locally (dice, damage, AI, effects).
-    This endpoint handles: XP, loot, HP/mana sync, beat advancement, and narration.
+async def resolve_combat(req: CombatResolveRequest, session: GameSession = Depends(get_authorized_session)):
+    """Accept the final combat result from client-side resolution.
+
+    The browser runs the fight (dice, damage, AI, effects). This endpoint checks the
+    result against the encounter stored when the fight began, then applies HP/mana,
+    used items, XP and loot, beat advancement and narration — exactly once.
     """
-    sm: StateManager = app.state.state_manager
+    lock = app.state.session_locks.setdefault(session.session_id, asyncio.Lock())
+    async with lock:
+        return await _resolve_combat_locked(req, session)
+
+
+async def _resolve_combat_locked(req: CombatResolveRequest, session: GameSession) -> dict:
     db: Database = app.state.db
     narrator: Narrator = app.state.narrator
     combat_engine: CombatEngine = app.state.combat_engine
 
-    session = sm.get_session(session_id)
-    if not session:
-        session = await db.load_session(session_id)
-        if not session:
-            raise HTTPException(status_code=404, detail="Session not found")
+    # Validate everything before changing anything.
+    active_combat = _get_active_combat(session)
+    _validate_combat_result(req, session, active_combat)
+    enemy_name = active_combat.enemies[0].name
 
     profile_data = session.world_state.get("player_profile")
     narration_params = get_narration_params(PlayerProfile(**profile_data) if profile_data else None)
 
-    # Sync player HP/mana from combat
-    session.player.hp = max(0, min(session.player.max_hp, req.player_hp))
-    session.player.mana = max(0, min(session.player.max_mana, req.player_mana))
+    # Apply the fight's outcome to the player
+    session.player.hp = req.player_hp
+    session.player.mana = req.player_mana
+    _consume_items(session.player, req.items_used)
 
     rewards = {"xp": 0, "items": [], "loot_descriptions": []}
     narration = ""
     choices = []
 
-    # The server-stored encounter is the source of truth for who was fought and what it drops.
-    active_combat = _get_active_combat(session)
-    enemy_name = active_combat.enemies[0].name if active_combat else req.enemy_name
-
     if req.result == "victory":
-        if active_combat is None:
-            # Legacy fallback: no stored encounter, look the template up by name.
-            from data.enemies import ENEMY_TEMPLATES
-            legacy = next((t for t in ENEMY_TEMPLATES.values() if t.name == req.enemy_name), None)
-            active_combat = CombatState(
-                enemies=[], xp_reward=legacy.xp_reward if legacy else 0,
-                loot_table=legacy.loot_table if legacy else [],
-            )
         rolled = combat_engine.roll_rewards(active_combat)
         rewards["xp"] = rolled["xp"]
         rewards["items"] = rolled["items"]
@@ -1419,15 +1365,8 @@ async def resolve_combat(session_id: str, req: CombatResolveRequest):
 
 
 @app.get("/session/{session_id}/combat")
-async def get_combat_state(session_id: str):
+async def get_combat_state(session: GameSession = Depends(get_authorized_session)):
     """Get current combat state."""
-    sm: StateManager = app.state.state_manager
-    session = sm.get_session(session_id)
-    if not session:
-        db: Database = app.state.db
-        session = await db.load_session(session_id)
-        if not session:
-            raise HTTPException(status_code=404, detail="Session not found")
 
     combat_data = session.world_state.get("combat")
     if not combat_data:
@@ -1445,27 +1384,16 @@ async def get_combat_state(session_id: str):
 
 
 @app.get("/session/{session_id}/history")
-async def get_history(session_id: str, limit: int = 20):
-    sm: StateManager = app.state.state_manager
-    session = sm.get_session(session_id)
-    if not session:
-        db: Database = app.state.db
-        session = await db.load_session(session_id)
-        if not session:
-            raise HTTPException(status_code=404, detail="Session not found")
+async def get_history(
+    limit: int = Query(20, ge=1, le=500),
+    session: GameSession = Depends(get_authorized_session),
+):
     return session.turn_history[-limit:]
 
 
 @app.get("/session/{session_id}/npcs")
-async def get_session_npcs(session_id: str):
+async def get_session_npcs(session: GameSession = Depends(get_authorized_session)):
     """Get all NPCs in the current session."""
-    sm: StateManager = app.state.state_manager
-    session = sm.get_session(session_id)
-    if not session:
-        db: Database = app.state.db
-        session = await db.load_session(session_id)
-        if not session:
-            raise HTTPException(status_code=404, detail="Session not found")
 
     npcs_data = session.world_state.get("npcs", {})
     return [
@@ -1598,14 +1526,12 @@ async def _record_campaign_end(db: Database, session, result: str):
     campaign = session.world_state.get("campaign", {})
     title = campaign.get("title", "Unknown Campaign")
     cls = session.player.character_class or session.world_state.get("character_class", "unknown")
-    user_id = session.world_state.get("user_id")
-
-    # Fallback: if no user_id on session, try admin (default user)
+    # Only logged-in players have a history and a profile; guest campaigns aren't filed
+    # under anyone else's account.
+    user_id = session.owner_user_id
     if not user_id:
-        admin_user = await db.get_user_by_username("admin")
-        if admin_user:
-            user_id = admin_user["id"]
-            logger.info(f"Campaign history: using admin fallback for session {session.session_id}")
+        logger.info(f"Guest campaign ended ({result}) — no history or profile to update: {session.session_id}")
+        return
 
     if user_id:
         try:
@@ -1633,8 +1559,6 @@ async def _record_campaign_end(db: Database, session, result: str):
                 logger.info(f"Profile updated for {user_id} after campaign end")
         except Exception as e:
             logger.error(f"Engagement tracking failed: {e}", exc_info=True)
-    else:
-        logger.warning(f"Campaign history skipped \u2014 no user_id for session {session.session_id}")
 
 
 # ─── Enemy extraction from narration ───
@@ -1702,6 +1626,33 @@ def _get_active_combat(session) -> CombatState | None:
     return combat
 
 
+_STORY_LOG_LIMIT = 50
+
+
+def _story_log(session) -> list[dict]:
+    """Opening scene plus each turn's narration (most recent last), for reading back."""
+    entries = []
+    opening = session.world_state.get("opening_narration")
+    if opening:
+        entries.append({"turn": 0, "player_input": None, "narration": clean_narration(opening)})
+    for turn in session.turn_history:
+        narration = clean_narration(turn.outcome.narration or "")
+        if narration:
+            entries.append({"turn": turn.turn_number, "player_input": turn.player_input, "narration": narration})
+    return entries[-_STORY_LOG_LIMIT:]
+
+
+def _class_abilities(session) -> list[dict]:
+    """The player's class abilities from the current definitions, so sessions saved
+    before a change (e.g. ability targets) still get the correct rules."""
+    from models.character import CLASS_ABILITIES, CharacterClass
+
+    try:
+        return [a.model_dump() for a in CLASS_ABILITIES[CharacterClass(session.player.character_class)]]
+    except (ValueError, KeyError):
+        return session.world_state.get("abilities", [])
+
+
 def _build_combat_payload(session, combat: CombatState) -> dict:
     """Everything the browser needs to run an encounter. Single source for every combat response."""
     from data.enemies import ENEMY_TEMPLATES
@@ -1737,7 +1688,7 @@ def _build_combat_payload(session, combat: CombatState) -> dict:
             "attack_bonus": combat_engine._calc_attack_bonus(player),
             "status_effects": [],
         },
-        "abilities": session.world_state.get("abilities", []),
+        "abilities": _class_abilities(session),
         "inventory": [
             {"name": i.name, "type": i.item_type, "hp_restore": i.hp_restore, "mana_restore": i.mana_restore}
             for i in player.inventory
@@ -1783,6 +1734,75 @@ async def _start_combat(session, narration: str) -> tuple[dict, str]:
         f"[{designed.archetype}/{designed.threat}, tier {combat.enemy_tier}, hp {enemy.max_hp}, armor {enemy.armor}]"
     )
     return _build_combat_payload(session, combat), designed.source
+
+
+# Biggest hit the browser's weapon table can roll (greatsword 2d6+3).
+_MAX_WEAPON_HIT = 15
+# Crits multiply by 1.5; damage-over-time ticks add up to this much per turn.
+_MAX_DOT_PER_TURN = 8
+
+
+def _max_player_hit(session) -> int:
+    """Largest single hit the player could land, from weapons and class abilities."""
+    from data.enemies import max_damage
+
+    best = _MAX_WEAPON_HIT
+    for ability in _class_abilities(session):
+        best = max(best, max_damage(ability.get("damage_dice", "")))
+    return best
+
+
+def _validate_combat_result(req: CombatResolveRequest, session, combat: CombatState | None) -> None:
+    """Reject results that don't match the stored encounter or couldn't happen.
+
+    409 = no such fight (already resolved, never started, or a stale combat_id);
+    400 = the fight exists but the reported result is implausible.
+    """
+    if combat is None:
+        raise HTTPException(status_code=409, detail="No active combat to resolve")
+    if req.combat_id != combat.combat_id:
+        raise HTTPException(status_code=409, detail="That combat has already ended or was replaced")
+
+    enemy = combat.enemies[0]
+    if req.enemy_name.strip().lower() != enemy.name.strip().lower():
+        raise HTTPException(status_code=400, detail="Enemy does not match the active combat")
+
+    player = session.player
+    if req.player_hp > player.max_hp:
+        raise HTTPException(status_code=400, detail="Reported HP exceeds the maximum")
+    if req.result == "defeat" and req.player_hp != 0:
+        raise HTTPException(status_code=400, detail="A defeat must end at 0 HP")
+
+    # Each used item must be a consumable the player actually carries.
+    carried = Counter(i.name for i in player.inventory if i.item_type == "consumable")
+    used = Counter(req.items_used)
+    for name, count in used.items():
+        if carried[name] < count:
+            raise HTTPException(status_code=400, detail=f"Item not in inventory: {name}")
+
+    # Mana can only go up through restoring items.
+    start_mana = combat.start_mana or player.mana
+    restored = 0
+    for name, count in used.items():
+        item = next(i for i in player.inventory if i.name == name and i.item_type == "consumable")
+        restored += item.mana_restore * count
+    if req.player_mana > min(player.max_mana, start_mana + restored):
+        raise HTTPException(status_code=400, detail="Reported mana is higher than possible")
+
+    # A victory needs enough turns to have dealt the enemy's HP.
+    if req.result == "victory":
+        per_turn = math.ceil(_max_player_hit(session) * 1.5) + _MAX_DOT_PER_TURN
+        if req.turns_taken < math.ceil(enemy.max_hp / per_turn):
+            raise HTTPException(status_code=400, detail="Victory reported in too few turns")
+
+
+def _consume_items(player, names: list[str]) -> None:
+    """Remove each used consumable once from the server-side inventory."""
+    for name in names:
+        for index, item in enumerate(player.inventory):
+            if item.name == name and item.item_type == "consumable":
+                del player.inventory[index]
+                break
 
 
 def _check_player_death(session) -> tuple[bool, str]:

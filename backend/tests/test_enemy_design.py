@@ -285,15 +285,21 @@ def test_designed_enemy_victory_awards_server_side_rewards(client, app_state):
     session_id, headers = _cyberpunk_session(client, app_state)
     started = act(client, session_id, headers).json()
     xp_reward = get_session(session_id).world_state["combat"]["xp_reward"]
-    player = started["combat_data"]["player"]
+    combat = started["combat_data"]
+    body = {
+        "combat_id": combat["combat_id"], "result": "victory",
+        "player_hp": combat["player"]["hp"], "player_mana": combat["player"]["mana"],
+        "enemy_name": "Giant Rat", "combat_log": [], "turns_taken": 4,
+    }
 
-    response = client.post(f"/session/{session_id}/combat/resolve", headers=headers, json={
-        "result": "victory", "player_hp": player["hp"], "player_mana": player["mana"],
-        "enemy_name": "Giant Rat",  # a forged name must not change who was fought
-        "combat_log": [], "turns_taken": 4,
-    })
+    # A forged enemy name is rejected outright...
+    forged = client.post(f"/session/{session_id}/combat/resolve", headers=headers, json=body)
+    assert forged.status_code == 400
 
+    # ...and the real one earns the stored encounter's rewards.
+    body["enemy_name"] = combat["enemy"]["name"]
+    response = client.post(f"/session/{session_id}/combat/resolve", headers=headers, json=body)
     assert response.status_code == 200, response.text
     assert response.json()["rewards"]["xp"] == xp_reward > 0
     narrated = app_state.narrator.calls[-1]["intent"].description
-    assert "Corporate Security Drone" in narrated and "Giant Rat" not in narrated
+    assert "Corporate Security Drone" in narrated

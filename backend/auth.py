@@ -49,6 +49,21 @@ async def get_current_user(authorization: str | None = Header(None)) -> dict | N
     }
 
 
+async def get_optional_user_strict(authorization: str | None = Header(None)) -> dict | None:
+    """Optional auth that rejects bad credentials.
+
+    No Authorization header → None (guest). A header that is present but not a
+    valid, unexpired Bearer token → 401, so an expired login isn't silently
+    turned into a guest session the user can't find later.
+    """
+    if not authorization:
+        return None
+    payload = decode_access_token(authorization[7:]) if authorization.startswith("Bearer ") else None
+    if not payload or not payload.get("sub"):
+        raise HTTPException(status_code=401, detail="Invalid or expired login")
+    return {"id": payload.get("sub"), "username": payload.get("username"), "role": payload.get("role")}
+
+
 async def require_auth(user: dict | None = Depends(get_current_user)) -> dict:
     """Required auth — raises 401 if no valid token."""
     if not user:

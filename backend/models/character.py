@@ -1,7 +1,9 @@
 """Character class system — classes, stats, abilities, starting equipment."""
 
 from enum import Enum
-from pydantic import BaseModel, Field
+from typing import Literal
+
+from pydantic import BaseModel, Field, model_validator
 
 
 class CharacterClass(str, Enum):
@@ -18,8 +20,17 @@ class Ability(BaseModel):
     ability_type: str  # "attack", "spell", "defend", "support"
     damage_dice: str = ""  # e.g. "2d6+3", empty for non-damage
     mana_cost: int = 0
-    status_effect: str | None = None  # "stunned", "burning", "blessed", etc.
+    status_effect: str | None = None  # canonical names from models/combat.py (bleed, stun, weaken, ...)
     status_duration: int = 0  # turns
+    # Who the status effect lands on. Attacks and spells always hit the enemy;
+    # support/defend abilities buff yourself unless marked "enemy" (debuffs like War Cry).
+    target: Literal["self", "enemy"] = "self"
+
+    @model_validator(mode="after")
+    def _offensive_abilities_target_the_enemy(self):
+        if self.ability_type in ("attack", "spell"):
+            self.target = "enemy"
+        return self
 
 
 class StatusEffect(BaseModel):
@@ -70,7 +81,8 @@ CLASS_ABILITIES = {
                 ability_type="attack", damage_dice="1d12+5", mana_cost=0,
                 status_effect="bleed", status_duration=3),
         Ability(name="War Cry", description="A fearsome shout that weakens nearby enemies",
-                ability_type="support", mana_cost=5, status_effect="weaken", status_duration=2),
+                ability_type="support", mana_cost=5, status_effect="weaken", status_duration=2,
+                target="enemy"),
     ],
     CharacterClass.ROGUE: [
         Ability(name="Backstab", description="Strike from the shadows for massive damage",
@@ -114,7 +126,8 @@ CLASS_ABILITIES = {
         Ability(name="Dissonance", description="A painful burst of magical sound",
                 ability_type="attack", damage_dice="2d8+2", mana_cost=12),
         Ability(name="Lullaby", description="A soothing melody that stuns the enemy",
-                ability_type="support", mana_cost=10, status_effect="stun", status_duration=1),
+                ability_type="support", mana_cost=10, status_effect="stun", status_duration=1,
+                target="enemy"),
     ],
 }
 

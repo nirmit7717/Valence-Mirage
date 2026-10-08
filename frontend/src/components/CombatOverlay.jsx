@@ -84,23 +84,32 @@ export default function CombatOverlay({ combat, onResolve, animationsEnabled }) 
     setTimeout(() => setFlashes(prev => ({ ...prev, [target]: false })), 400);
   }, [animationsEnabled]);
 
+  // Recent log lines go to the server for the post-combat narration.
+  const logsRef = useRef([]);
+  useEffect(() => { logsRef.current = logs; }, [logs]);
+  const finish = useCallback((result, s) => {
+    s.resolved = true;
+    s.logEntries = logsRef.current.map(l => l.text).reverse().slice(-12);
+    setTimeout(() => onResolve(result, s), 1200);
+  }, [onResolve]);
+
   const checkDeath = useCallback((s) => {
     if (s.enemy.hp <= 0) {
       s.enemy.hp = 0;
       addLog(`🏆 ${s.enemy.name} is defeated!`, 'crit');
       setEnding(true);
-      setTimeout(() => onResolve('victory', s), 1200);
+      finish('victory', s);
       return true;
     }
     if (s.player.hp <= 0) {
       s.player.hp = 0;
       addLog('💀 You have been defeated...', 'crit');
       setEnding(true);
-      setTimeout(() => onResolve('defeat', s), 1200);
+      finish('defeat', s);
       return true;
     }
     return false;
-  }, [addLog, onResolve]);
+  }, [addLog, finish]);
 
   const showDiceThen = useCallback((diceInfo, callback) => {
     if (!diceInfo) { callback(); return; }
@@ -120,11 +129,11 @@ export default function CombatOverlay({ combat, onResolve, animationsEnabled }) 
     const result = resolveEnemyTurn(next);
     if (result.ended) {
       if (result.victory) {
-        next.resolved = true;
+        next.enemy.hp = 0;
         setState(next);
         addLog(`🏆 ${next.enemy.name} is defeated!`, 'crit');
         setEnding(true);
-        setTimeout(() => onResolve('victory', next), 800);
+        finish('victory', next);
       }
       return;
     }
@@ -140,7 +149,7 @@ export default function CombatOverlay({ combat, onResolve, animationsEnabled }) 
         actionLockRef.current = false;
       }, 300);
     });
-  }, [addLog, showDmg, flashCard, checkDeath, onResolve, showDiceThen]);
+  }, [addLog, showDmg, flashCard, checkDeath, finish, showDiceThen]);
 
   // Player actions — same pattern: resolve on a copy, commit after the roll animation.
   const doAttack = useCallback((weaponName, dice) => {

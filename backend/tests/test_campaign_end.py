@@ -68,6 +68,7 @@ def test_combat_death_reports_defeat_on_hydrate(client, app_state):
     started = act(client, session_id, headers).json()
 
     resolved = client.post(f"/session/{session_id}/combat/resolve", headers=headers, json={
+        "combat_id": started["combat_data"]["combat_id"],
         "result": "defeat", "player_hp": 0, "player_mana": started["combat_data"]["player"]["mana"],
         "enemy_name": started["combat_data"]["enemy"]["name"], "combat_log": [], "turns_taken": 3,
     }).json()

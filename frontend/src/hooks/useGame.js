@@ -2,10 +2,12 @@
 //  useGame — Core game state management hook
 // ═══════════════════════════════════════════════
 
-import { useState, useCallback, useRef } from 'react';
+import { useState, useCallback, useEffect, useRef } from 'react';
 import * as api from '../api';
-import { createCombatState } from '../utils/combat';
+import { buildResolvePayload, createCombatState } from '../utils/combat';
 import { getThemeFromCampaign } from '../utils/theme';
+
+const STORY_LOG_LIMIT = 50;
 
 // Pull "→ choice" lines out of narration text.
 function splitChoices(narration) {
@@ -31,7 +33,15 @@ export function useGame() {
   const [busy, setBusy] = useState(false);
   const [diceResult, setDiceResult] = useState(null);     // triggers dice animation
   const [pendingResponse, setPendingResponse] = useState(null); // queued until dice animation completes
+  // Every scene shown so far ({ turn, playerInput, html }), so the player can page back.
+  const [storyLog, setStoryLog] = useState([]);
   const msgIdRef = useRef(0);
+  const restoreSessionRef = useRef(null);
+
+  const recordScene = useCallback((html, turn, playerInput = null) => {
+    if (!html) return;
+    setStoryLog(prev => [...prev, { turn, playerInput, html }].slice(-STORY_LOG_LIMIT));
+  }, []);
 
   const addMessage = useCallback((type, content) => {
     const id = ++msgIdRef.current;
@@ -78,13 +88,15 @@ export function useGame() {
       addMessage('system', `${classEmoji[data.character_class] || '⚔️'} <strong>${className}</strong> — ${data.class_description || ''}`);
 
       if (data.opening_narration) {
+        const openingHtml = `<strong>📜 ${data.campaign.title}</strong><br/><br/>${data.opening_narration}`;
         setNarration({
-          html: `<strong>📜 ${data.campaign.title}</strong><br/><br/>${data.opening_narration}`,
+          html: openingHtml,
           meta: null,
           choices: data.choices || null,
           combatData: null,
         });
-        addMessage('system', `<strong>📜 ${data.campaign.title}</strong><br/><br/>${data.opening_narration}`);
+        setStoryLog([{ turn: 0, playerInput: null, html: openingHtml }]);
+        addMessage('system', openingHtml);
       } else {
         addMessage('system', `<strong>📜 ${data.campaign.title}</strong><br/><br/>${data.campaign.premise}<br/><br/><em>Setting: ${data.campaign.setting}</em>`);
       }
@@ -136,18 +148,36 @@ export function useGame() {
         applyCampaignEnd(data.campaign_result);
       }
 
-      const restoredNarrationText = data.opening_narration || data.situation || data.campaign?.premise || data.campaign?.title || '';
-      if (restoredNarrationText && !data.campaign_ended) {
-        const restoredChoices = Array.isArray(data.choices) && data.choices.length
-          ? data.choices
-          : [...new Set((restoredNarrationText.match(/(?:^|\n)→\s*(.+)/g) || []).map(line => line.replace(/^\s*→\s*|^\s*->\s*/g, '').trim()).filter(Boolean))];
-        setNarration({
-          html: `<strong>📜 ${data.campaign?.title || 'Campaign'}</strong><br/><br/>${restoredNarrationText}`,
-          meta: null,
-          choices: restoredChoices.length ? restoredChoices : null,
-          combatData: null,
-          pendingOutcome: null,
-        });
+      const title = data.campaign?.title || 'Campaign';
+      const log = (data.story_log || []).map(entry => ({
+        turn: entry.turn,
+        playerInput: entry.player_input,
+        html: entry.turn === 0 ? `<strong>📜 ${title}</strong><br/><br/>${entry.narration}` : entry.narration,
+      }));
+      setStoryLog(log);
+
+      if (data.combat_data && !data.campaign_ended) {
+        // Refreshed mid-fight: go straight back into the same encounter.
+        setNarration(null);
+        setCombat(createCombatState(data.combat_data));
+      } else if (!data.campaign_ended) {
+        // Resume at the latest scene (not the opening) with the options it offered.
+        const latest = log[log.length - 1];
+        const situation = splitChoices(data.situation || '');
+        const html = latest?.html
+          || `<strong>📜 ${title}</strong><br/><br/>${situation.text || data.campaign?.premise || ''}`;
+        const choices = log.length > 1
+          ? situation.choices
+          : (Array.isArray(data.choices) && data.choices.length ? data.choices : situation.choices);
+        if (html) {
+          setNarration({
+            html,
+            meta: null,
+            choices: choices.length ? choices : null,
+            combatData: null,
+            pendingOutcome: null,
+          });
+        }
       }
 
       // Restore sidebar
@@ -163,7 +193,7 @@ export function useGame() {
         mana: data.player?.mana || 50,
         maxMana: data.player?.max_mana || 50,
         stats: data.player?.stats,
-        beat: data.campaign?.acts?.[0]?.beats?.[0]?.title || '—',
+        beat: data.current_beat || data.campaign?.acts?.[0]?.beats?.[0]?.title || '—',
         inventory: data.inventory || [],
         npcs: Object.values(data.npcs || {}),
         effects: [],
@@ -182,8 +212,10 @@ export function useGame() {
     }
   }, [addMessage, applyCampaignEnd]);
 
+  useEffect(() => { restoreSessionRef.current = restoreSession; }, [restoreSession]);
+
   // Shared response processing (called either directly or after dice animation)
-  const _processResponse = useCallback((data) => {
+  const _processResponse = useCallback((data, playerInput = null) => {
     // Combat guard: server says combat is active but frontend hasn't entered combat mode
     // Directly activate combat without narration
     if (data.outcome === 'combat_active' && data.combat_data) {
@@ -275,6 +307,7 @@ export function useGame() {
 
     const storyOver = pendingOutcome?.type === 'victory' || pendingOutcome?.type === 'game_over';
 
+    recordScene(data.narration + npcHtml, data.turn_number, playerInput);
     setNarration({
       html: data.narration + npcHtml,
       meta: metaHtml,
@@ -331,15 +364,15 @@ export function useGame() {
 
     // Combat/victory/game-over activation is handled by dismissNarration()
     // which checks narration.pendingOutcome after the player reads the narration
-  }, [addMessage, showNotice]);
+  }, [addMessage, showNotice, recordScene]);
 
   // Called by DiceRoll when animation finishes — processes the queued response
   const onDiceAnimationComplete = useCallback(() => {
     setDiceResult(null);
-    const data = pendingResponse;
-    if (!data) { setBusy(false); return; }
+    const queued = pendingResponse;
+    if (!queued) { setBusy(false); return; }
     setPendingResponse(null);
-    _processResponse(data);
+    _processResponse(queued.data, queued.playerInput);
     setBusy(false);
   }, [pendingResponse, _processResponse]);
 
@@ -358,12 +391,12 @@ export function useGame() {
       // If there's a dice_result, show dice animation FIRST, then process
       if (data.dice_result) {
         setDiceResult(data.dice_result);
-        setPendingResponse(data);
+        setPendingResponse({ data, playerInput: actionText });
         setLoading(false);
         // busy stays true until onDiceAnimationComplete finishes
       } else {
         // No dice roll — process immediately
-        _processResponse(data);
+        _processResponse(data, actionText);
         setLoading(false);
         setBusy(false);
       }
@@ -390,17 +423,7 @@ export function useGame() {
   const resolveCombat = useCallback(async (result, combatState) => {
     if (!sessionId) return;
     try {
-      const data = await api.resolveCombat(sessionId, {
-        result,
-        player_hp: Math.max(0, combatState.player.hp),
-        player_mana: Math.max(0, combatState.player.mana),
-        enemy_name: combatState.enemy.name,
-        combat_log: (combatState.logEntries || []).map(msg => ({
-          actor: msg.includes('You') ? 'player' : 'enemy',
-          message: msg.replace(/^(?:⚔️|🧪|⚡|🏆|💀)+ /u, ''),
-        })),
-        turns_taken: combatState.turn,
-      });
+      const data = await api.resolveCombat(sessionId, buildResolvePayload(result, combatState));
 
       setCombat(null);
 
@@ -418,6 +441,7 @@ export function useGame() {
           const { text: cleanNarr, choices: arrowChoices } = splitChoices(data.narration);
           // When the fight ended the campaign, the card leads to the end screen instead of choices.
           const choices = po ? null : (arrowChoices.length > 0 ? arrowChoices : (data.choices || null));
+          recordScene(cleanNarr, data.turn_number ?? null, `Fought ${combatState.enemy.name}`);
           setNarration({ html: cleanNarr, meta: null, choices, combatData: null, pendingOutcome: po });
         } else if (po) {
           // No narration but pending outcome (shouldn't happen, but safety)
@@ -432,6 +456,7 @@ export function useGame() {
         if (data.narration) {
           const { text: cleanNarr, choices: arrowChoices } = splitChoices(data.narration);
           const choices = po ? null : (arrowChoices.length > 0 ? arrowChoices : (data.choices || null));
+          recordScene(cleanNarr, data.turn_number ?? null, `Fought ${combatState.enemy.name}`);
           setNarration({ html: cleanNarr, meta: null, choices, combatData: null, pendingOutcome: po });
         } else if (po) {
           setTimeout(() => {
@@ -458,9 +483,15 @@ export function useGame() {
     } catch (e) {
       setCombat(null);
       addMessage('system', '⚠ Combat resolution failed: ' + e.message);
-      showNotice(`Combat resolution failed: ${e.detail || e.message}`);
+      if (e.status === 409) {
+        // This fight was already settled (e.g. resolved in another tab) — reload the real state.
+        showNotice('That battle has already been settled. Restoring your journey...');
+        setTimeout(() => restoreSessionRef.current?.(sessionId), 1200);
+      } else {
+        showNotice(`Combat resolution failed: ${e.detail || e.message}`);
+      }
     }
-  }, [sessionId, addMessage, showNotice]);
+  }, [sessionId, addMessage, showNotice, recordScene]);
 
   const dismissNarration = useCallback(() => {
     setNarration(prev => {
@@ -505,7 +536,7 @@ export function useGame() {
   return {
     sessionId, sessionInfo, messages, sidebar, loading, narration,
     combat, campaignEnded, gameOver, victory, theme, busy,
-    diceResult, pendingResponse,
+    diceResult, pendingResponse, storyLog,
     startSession, restoreSession, submitAction, resolveCombat,
     dismissNarration,
     onDiceAnimationComplete,

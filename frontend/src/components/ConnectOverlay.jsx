@@ -1,5 +1,7 @@
 import { useState } from 'react';
 import { CLASS_DATA } from '../data/classes';
+import { keywordsToText } from '../utils/keywords';
+import KeywordInput from './KeywordInput';
 
 const SIZES = [
   { value: 'small', emoji: '⚡', label: 'Short', desc: '12-15 turns' },
@@ -11,7 +13,7 @@ export default function ConnectOverlay({ onStart, onCancel }) {
   const [name, setName] = useState('Adventurer');
   const [cls, setCls] = useState('warrior');
   const [size, setSize] = useState('medium');
-  const [keywords, setKeywords] = useState('');
+  const [keywords, setKeywords] = useState([]);
   const [loading, setLoading] = useState(false);
 
   const selected = CLASS_DATA[cls];
@@ -19,7 +21,7 @@ export default function ConnectOverlay({ onStart, onCancel }) {
   const handleStart = async () => {
     setLoading(true);
     try {
-      await onStart({ player_name: name || 'Adventurer', keywords, character_class: cls, campaign_size: size });
+      await onStart({ player_name: name || 'Adventurer', keywords: keywordsToText(keywords), character_class: cls, campaign_size: size });
     } catch {
       alert('Failed to connect to server. Is it running?');
     }
@@ -91,9 +93,7 @@ export default function ConnectOverlay({ onStart, onCancel }) {
             })}
           </div>
 
-          <input type="text" placeholder="Adventure keywords (e.g. haunted castle undead siege)..."
-            maxLength={200} value={keywords} onChange={e => setKeywords(e.target.value)}
-            className="connect-input connect-input-sm" aria-label="Adventure keywords" />
+          <KeywordInput keywords={keywords} onChange={setKeywords} />
         </div>
 
         <button className="connect-start-btn" onClick={handleStart} disabled={loading}

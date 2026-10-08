@@ -238,18 +238,37 @@ python main.py
 ```
 Open [http://localhost:8000/static/](http://localhost:8000/static/) in your browser.
 
+#### 7. Run the Tests
+
+The backend suite runs offline (language-model calls are faked, the database is a temporary SQLite file):
+```powershell
+cd backend
+.\venv\Scripts\activate
+pip install -r requirements-dev.txt
+python -m pytest
+```
+Live checks against a running server and the real model are opt-in:
+```powershell
+$env:VM_LIVE_BASE_URL = "http://localhost:8000"
+python -m pytest -m live
+```
+Frontend unit tests use Node's built-in test runner:
+```bash
+cd frontend
+npm test
+```
+
 ### API Endpoints
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
-| `POST` | `/session/new` | Create session (class, size, keywords) |
+| `POST` | `/session/new` | Create session (class, size, keywords). Guests receive a one-time `guest_token` |
 | `POST` | `/session/{id}/action` | Submit player action |
-| `POST` | `/session/{id}/combat/init` | Initiate combat encounter |
-| `POST` | `/session/{id}/combat/resolve` | Submit combat result |
+| `POST` | `/session/{id}/combat/resolve` | Submit combat result (validated against the stored encounter) |
 | `GET` | `/session/{id}/combat` | Get combat state |
-| `GET` | `/session/{id}/history` | Get turn history |
+| `GET` | `/session/{id}/history` | Get turn history (`?limit=1-500`, default 20) |
 | `GET` | `/session/{id}` | Get session state |
-| `GET` | `/sessions` | List all sessions |
+| `GET` | `/sessions` | List your sessions (login required; admins see all) |
 | `DELETE` | `/session/{id}` | Delete a session |
 | `POST` | `/auth/login` | Login (JWT) |
 | `POST` | `/auth/create-user` | Admin: create user |
@@ -258,6 +277,37 @@ Open [http://localhost:8000/static/](http://localhost:8000/static/) in your brow
 | `GET` | `/user/dashboard` | User dashboard data |
 | `GET` | `/session/{id}/hydrate` | Full state for frontend hydration |
 | `GET` | `/health` | Server status |
+
+### Session Access
+
+Every `/session/{id}/...` route checks who is asking:
+
+- **Logged in:** send `Authorization: Bearer <token>`. Sessions you create are yours; other accounts get `404`.
+- **Guest:** `/session/new` returns a `guest_token` once. Send it back as `X-Session-Token` on every call for that session (the web app stores it per session in `localStorage`).
+- **Admin:** can open every session.
+- An invalid or expired Bearer token on `/session/new` returns `401` instead of silently creating a guest session.
+
+Sessions saved before ownership existed are assigned on startup: to the user stored with the session if that account exists, otherwise to `admin`.
+
+### Combat Resolution
+
+Fights run in the browser; the server stores the encounter when it starts and checks the result:
+
+```json
+POST /session/{id}/combat/resolve
+{
+  "combat_id": "…",                  // must match the active fight (else 409)
+  "result": "victory",               // "victory" | "defeat"
+  "player_hp": 41,                   // ≤ max HP; a defeat must be 0
+  "player_mana": 30,                 // ≤ starting mana + mana restored by items_used
+  "enemy_name": "Security Drone",    // must match the stored enemy (else 400)
+  "items_used": ["Health Potion"],   // consumables you carry; removed from your inventory
+  "combat_log": [],
+  "turns_taken": 5                   // a victory needs enough turns to deal the enemy's HP
+}
+```
+
+XP and loot always come from the stored encounter, and each fight can be resolved once (a repeat gets `409`). Resolution is serialized with an in-process lock per session, so run a single server worker.
 
 ### Example: Create Session
 

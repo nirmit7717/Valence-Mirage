@@ -196,6 +196,7 @@ class CombatState(BaseModel):
     xp_reward: int = 0
     loot_table: list[dict] = []
     enemy_profile: dict = {}  # archetype, threat, source, description
+    start_mana: int = 0  # player mana when the fight began — bounds the mana the client may report
     enemies: list[Combatant] = []
     player: Combatant | None = None
     turn_number: int = 0

@@ -48,7 +48,9 @@ async def _test_lifespan(app):
     db = Database()
     await db.connect()
     app.state.db = db
+    app.state.session_locks = {}
     await main._ensure_admin(db)
+    await main._assign_legacy_owners(db)
     try:
         yield
     finally:

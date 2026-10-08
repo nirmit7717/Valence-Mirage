@@ -72,6 +72,7 @@ class CombatEngine:
             enemy_tier=template.tier,
             xp_reward=template.xp_reward,
             loot_table=[dict(entry) for entry in template.loot_table],
+            start_mana=player_state.mana,
             enemies=[enemy],
             player=player,
             turn_number=1,
@@ -193,7 +194,11 @@ class CombatEngine:
         if not player:
             return combat
 
-        # ── Phase 1: Apply status effects on enemy ──
+        # ── Phase 1: Is the enemy stunned? Checked before effects tick, otherwise a
+        # one-turn stun expires during the tick and never stops a single turn. ──
+        stunned = not self._can_act(enemy)
+
+        # ── Phase 2: Apply status effects on enemy ──
         effect_msgs = self._apply_status_effects(enemy)
         for msg in effect_msgs:
             self._log(combat, enemy.name, "Effect Tick", "effect", 0, msg)
@@ -202,8 +207,7 @@ class CombatEngine:
             combat.status = "victory"
             return self._log(combat, enemy.name, "Death", "defeat", 0, f"{enemy.name} succumbs to its wounds!")
 
-        # ── Phase 2: Can enemy act? ──
-        if not self._can_act(enemy):
+        if stunned:
             return self._log(combat, enemy.name, "Stunned", "miss", 0,
                              f"{enemy.name} is stunned and cannot act!")
 

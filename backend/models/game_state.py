@@ -101,6 +101,9 @@ class GameSession(BaseModel):
     turn_history: list[Turn] = []
     turn_number: int = 0
     created_at: datetime = Field(default_factory=datetime.now)
+    # Ownership — stored in their own DB columns and never sent to clients.
+    owner_user_id: str | None = Field(default=None, exclude=True)    # logged-in owner
+    guest_token_hash: str | None = Field(default=None, exclude=True)  # sha256 of a guest's secret token
 
 
 from .outcome import ProbabilityScore  # noqa: E402
