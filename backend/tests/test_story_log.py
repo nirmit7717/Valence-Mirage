@@ -1,7 +1,7 @@
 """Hydrate returns the story so far, so a refreshed page can page back through it,
 and the history endpoint returns full turn records for the campaign detail page."""
 
-from helpers import act, create_session, make_intent
+from helpers import act, campaign_beats, create_session, make_intent, win_fight
 
 
 def test_story_log_has_the_opening_and_every_turn(client, app_state):
@@ -26,17 +26,24 @@ def test_story_log_is_capped(client, app_state, monkeypatch):
     session_id, headers = create_session(client)
     app_state.intent_parser.next_intent = make_intent(description="inspect stonework")
     for i in range(5):
-        assert act(client, session_id, headers, f"I search the room again ({i})").json()["redo_turn"] is False
+        body = act(client, session_id, headers, f"I search the room again ({i})").json()
+        assert body["redo_turn"] is False
+        if body["combat_started"]:  # planned fights are part of the story too
+            assert win_fight(client, session_id, headers, body["combat_data"]).status_code == 200
 
+    history = client.get(f"/session/{session_id}/history?limit=500", headers=headers).json()
     log = client.get(f"/session/{session_id}/hydrate", headers=headers).json()["story_log"]
 
-    assert [entry["turn"] for entry in log] == [3, 4, 5]
+    all_entries = [0] + [turn["turn_number"] for turn in history]
+    assert len(all_entries) > 3, "need more scenes than the cap for this test to mean anything"
+    assert [entry["turn"] for entry in log] == all_entries[-3:]
 
 
 def test_hydrate_reports_the_current_beat(client):
     session_id, headers = create_session(client)
+    first_beat = campaign_beats(session_id)[0][1]
     hydrated = client.get(f"/session/{session_id}/hydrate", headers=headers).json()
-    assert hydrated["current_beat"] == "The Barkeep's Warning"
+    assert hydrated["current_beat"] == first_beat["title"]
 
 
 def test_history_returns_turn_records_with_outcome_objects(client, app_state):

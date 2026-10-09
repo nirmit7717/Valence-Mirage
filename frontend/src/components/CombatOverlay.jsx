@@ -1,7 +1,21 @@
 import { useState, useCallback, useEffect, useRef } from 'react';
-import { getWeaponDice, resolvePlayerAttack, resolvePlayerSkill, resolvePlayerItem, resolveEnemyTurn, getStatusIcon, cloneCombatState, enemyIntro } from '../utils/combat';
+import { canAct, getWeaponDice, resolvePlayerAttack, resolvePlayerSkill, resolvePlayerItem, resolveEnemyTurn, getStatusIcon, cloneCombatState, enemyIntro } from '../utils/combat';
+import { classIcon, createFlavor, enemyIcon, resultDetail } from '../utils/combatFlavor';
 
 const THREAT_LABELS = { minion: 'Minion', elite: 'Elite', boss: 'Boss' };
+const LOG_CLASSES = { player: 'player-log', enemy: 'enemy-log', crit: 'crit-log', scene: 'scene-log', system: 'system-log' };
+
+// Story line + small numbers for one combat.js result (see utils/combatFlavor.js).
+function storyLine(flavor, result, source) {
+  if (source.kind === 'attack') return flavor.attackLine(source.weapon, result.kind);
+  if (source.kind === 'skill') return flavor.skillLine(source.ability.name, result.kind, result.effect || '');
+  if (source.kind === 'item') return flavor.itemLine(source.item);
+  return flavor.enemyMoveLine(result.move, result.kind, result.effect || '');
+}
+
+function describeResult(flavor, result, source) {
+  return { text: storyLine(flavor, result, source) || result.log, detail: resultDetail(result, getStatusIcon) };
+}
 
 // ─── Inline Combat Dice Animation ───
 function CombatDice({ roll, target, success, crit, onDone }) {
@@ -53,12 +67,30 @@ export default function CombatOverlay({ combat, onResolve, animationsEnabled }) 
   const diceIdRef = useRef(0);
   // Held from the moment the player acts until the enemy's turn has fully played out.
   const actionLockRef = useRef(false);
+  // Flavor lines for this fight, and whether the enemy has reacted to dropping below half HP.
+  const flavorRef = useRef(createFlavor());
+  const halfTauntRef = useRef(false);
+  // doEnemy runs again when the player is stunned; the ref avoids a self-referencing callback.
+  const doEnemyRef = useRef(null);
 
-  // Initialize combat
+  // Initialize combat: the scene that led here, who the enemy is, and its opening taunt.
   useEffect(() => {
     if (!combat) return;
+    const flavor = createFlavor({
+      enemy: combat.enemy.name,
+      archetype: combat.enemy.archetype,
+      genre: combat.genre,
+      threat: combat.enemy.threat,
+    });
+    flavorRef.current = flavor;
+    halfTauntRef.current = false;
     setState(cloneCombatState(combat));
-    setLogs([{ text: enemyIntro(combat.enemy.name), type: 'system' }]);
+    const opening = [
+      combat.scene && { text: combat.scene, type: 'scene' },
+      { text: combat.enemy.description || enemyIntro(combat.enemy.name), type: 'system' },
+      { text: flavor.tauntLine('start'), type: 'enemy', kind: 'taunt' },
+    ].filter(Boolean);
+    setLogs(opening.reverse()); // newest first
     setMenu('main');
     setTurnPhase('player');
     setEntering(true);
@@ -68,9 +100,21 @@ export default function CombatOverlay({ combat, onResolve, animationsEnabled }) 
     setTimeout(() => setEntering(false), 500);
   }, [combat]);
 
-  const addLog = useCallback((text, type = 'system') => {
-    setLogs(prev => [{ text, type }, ...prev].slice(0, 25));
+  const addLog = useCallback((text, type = 'system', detail = '', kind = '') => {
+    setLogs(prev => [{ text, type, detail, kind }, ...prev].slice(0, 25));
   }, []);
+
+  const logResult = useCallback((result, source, type) => {
+    const { text, detail } = describeResult(flavorRef.current, result, source);
+    addLog(text, type, detail, result.kind || '');
+  }, [addLog]);
+
+  // The enemy reacts once when it first drops to half health.
+  const maybeHalfTaunt = useCallback((s) => {
+    if (halfTauntRef.current || s.enemy.hp <= 0 || s.enemy.hp > s.enemy.max_hp / 2) return;
+    halfTauntRef.current = true;
+    addLog(flavorRef.current.tauntLine('half'), 'enemy', '', 'taunt');
+  }, [addLog]);
 
   const showDmg = useCallback((target, amount, type) => {
     const id = ++floatsRef.current;
@@ -89,27 +133,36 @@ export default function CombatOverlay({ combat, onResolve, animationsEnabled }) 
   useEffect(() => { logsRef.current = logs; }, [logs]);
   const finish = useCallback((result, s) => {
     s.resolved = true;
-    s.logEntries = logsRef.current.map(l => l.text).reverse().slice(-12);
+    // Story lines only; the scene is already known to the server.
+    s.logEntries = logsRef.current
+      .filter(l => l.type !== 'scene')
+      .map(l => ({ text: l.text, type: l.type }))
+      .reverse()
+      .slice(-12);
     setTimeout(() => onResolve(result, s), 1200);
   }, [onResolve]);
+
+  const announceVictory = useCallback(() => {
+    addLog(`🏆 ${flavorRef.current.tauntLine('defeat')}`, 'crit', 'defeated', 'crit');
+  }, [addLog]);
 
   const checkDeath = useCallback((s) => {
     if (s.enemy.hp <= 0) {
       s.enemy.hp = 0;
-      addLog(`🏆 ${s.enemy.name} is defeated!`, 'crit');
+      announceVictory();
       setEnding(true);
       finish('victory', s);
       return true;
     }
     if (s.player.hp <= 0) {
       s.player.hp = 0;
-      addLog('💀 You have been defeated...', 'crit');
+      addLog('💀 You have been defeated...', 'crit', '', 'crit');
       setEnding(true);
       finish('defeat', s);
       return true;
     }
     return false;
-  }, [addLog, finish]);
+  }, [addLog, finish, announceVictory]);
 
   const showDiceThen = useCallback((diceInfo, callback) => {
     if (!diceInfo) { callback(); return; }
@@ -131,41 +184,56 @@ export default function CombatOverlay({ combat, onResolve, animationsEnabled }) 
       if (result.victory) {
         next.enemy.hp = 0;
         setState(next);
-        addLog(`🏆 ${next.enemy.name} is defeated!`, 'crit');
+        announceVictory();
         setEnding(true);
         finish('victory', next);
       }
       return;
     }
     showDiceThen(result.diceInfo, () => {
-      addLog(result.log, result.type === 'crit' ? 'crit' : 'enemy');
-      if (result.damage) showDmg(result.damage.target, result.damage.amount, result.damage.crit ? 'crit' : 'damage');
+      logResult(result, { kind: 'enemy' }, result.type === 'crit' ? 'crit' : 'enemy');
+      if (result.taunt) addLog(flavorRef.current.tauntLine(result.taunt), 'enemy', '', 'taunt');
+      // The enemy's heal lands on its own card.
+      if (result.damage) showDmg(result.damage.target, result.damage.amount, result.damage.heal ? 'heal' : result.damage.crit ? 'crit' : 'damage');
       if (result.flash) flashCard(result.flash);
       setState(next);
       if (checkDeath(next)) return;
+      maybeHalfTaunt(next); // damage over time can drop it below half too
+      if (!canAct(next.player)) {
+        // Stunned (a pounce, a shield slam...): the player loses this turn.
+        setTimeout(() => {
+          addLog('💫 You are stunned and lose your turn!', 'system', 'stun', 'stunned');
+          setTimeout(() => doEnemyRef.current?.(next), 900);
+        }, 500);
+        return;
+      }
       setTimeout(() => {
         setTurnPhase('player');
         setMenu('main');
         actionLockRef.current = false;
       }, 300);
     });
-  }, [addLog, showDmg, flashCard, checkDeath, finish, showDiceThen]);
+  }, [addLog, logResult, showDmg, flashCard, checkDeath, finish, showDiceThen, announceVictory, maybeHalfTaunt]);
+  useEffect(() => { doEnemyRef.current = doEnemy; }, [doEnemy]);
 
   // Player actions — same pattern: resolve on a copy, commit after the roll animation.
+  const commitPlayerResult = useCallback((next, result, source) => {
+    logResult(result, source, result.type === 'crit' ? 'crit' : 'player');
+    if (result.damage) showDmg(result.damage.target, result.damage.amount, result.damage.crit ? 'crit' : result.damage.heal ? 'heal' : 'damage');
+    if (result.flash) flashCard(result.flash);
+    setState(next);
+    if (checkDeath(next)) return;
+    maybeHalfTaunt(next);
+    setTimeout(() => doEnemy(next), 600);
+  }, [logResult, showDmg, flashCard, checkDeath, maybeHalfTaunt, doEnemy]);
+
   const doAttack = useCallback((weaponName, dice) => {
     if (!state || state.resolved || actionLockRef.current) return;
     actionLockRef.current = true;
     const next = cloneCombatState(state);
     const result = resolvePlayerAttack(next, weaponName, dice);
-    showDiceThen(result.diceInfo, () => {
-      addLog(result.log, result.type === 'crit' ? 'crit' : 'player');
-      if (result.damage) showDmg(result.damage.target, result.damage.amount, result.damage.crit ? 'crit' : result.damage.heal ? 'heal' : 'damage');
-      if (result.flash) flashCard(result.flash);
-      setState(next);
-      if (checkDeath(next)) return;
-      setTimeout(() => doEnemy(next), 600);
-    });
-  }, [state, addLog, showDmg, flashCard, checkDeath, showDiceThen, doEnemy]);
+    showDiceThen(result.diceInfo, () => commitPlayerResult(next, result, { kind: 'attack', weapon: weaponName }));
+  }, [state, showDiceThen, commitPlayerResult]);
 
   const doSkill = useCallback((ability) => {
     if (!state || state.resolved || actionLockRef.current) return;
@@ -173,15 +241,8 @@ export default function CombatOverlay({ combat, onResolve, animationsEnabled }) 
     actionLockRef.current = true;
     const next = cloneCombatState(state);
     const result = resolvePlayerSkill(next, ability); // deducts the mana cost exactly once
-    showDiceThen(result.diceInfo, () => {
-      addLog(result.log, result.type === 'crit' ? 'crit' : 'player');
-      if (result.damage) showDmg(result.damage.target, result.damage.amount, result.damage.crit ? 'crit' : result.damage.heal ? 'heal' : 'damage');
-      if (result.flash) flashCard(result.flash);
-      setState(next);
-      if (checkDeath(next)) return;
-      setTimeout(() => doEnemy(next), 600);
-    });
-  }, [state, addLog, showDmg, flashCard, checkDeath, showDiceThen, doEnemy]);
+    showDiceThen(result.diceInfo, () => commitPlayerResult(next, result, { kind: 'skill', ability }));
+  }, [state, addLog, showDiceThen, commitPlayerResult]);
 
   const doItem = useCallback((itemName, hpRestore, manaRestore) => {
     if (!state || state.resolved || actionLockRef.current) return;
@@ -189,12 +250,12 @@ export default function CombatOverlay({ combat, onResolve, animationsEnabled }) 
     const next = cloneCombatState(state);
     const results = resolvePlayerItem(next, itemName, hpRestore, manaRestore);
     results.forEach(r => {
-      addLog(r.log, 'player');
+      logResult(r, { kind: 'item', item: itemName }, 'player');
       if (r.damage) showDmg(r.damage.target, r.damage.amount, 'heal');
     });
     setState(next);
     setTimeout(() => doEnemy(next), 600);
-  }, [state, addLog, showDmg, doEnemy]);
+  }, [state, logResult, showDmg, doEnemy]);
 
   if (!combat || !state) return null;
 
@@ -209,7 +270,7 @@ export default function CombatOverlay({ combat, onResolve, animationsEnabled }) 
         {/* Enemy */}
         <div className="arena-top">
           <div className={`combat-entity enemy-entity ${flashes.enemy ? 'hit-flash shake' : ''}`} id="enemyCard">
-            <span className="entity-icon">👹</span>
+            <span className="entity-icon" aria-hidden="true">{enemyIcon(state.enemy.archetype)}</span>
             <h3>
               {state.enemy.name}
               {THREAT_LABELS[state.enemy.threat] && (
@@ -219,6 +280,14 @@ export default function CombatOverlay({ combat, onResolve, animationsEnabled }) 
             {state.enemy.description && <div className="enemy-desc">{state.enemy.description}</div>}
             <div className="hp-bar-bg"><div className="hp-bar-fill" style={{ width: `${ePct}%` }} /></div>
             <div className="hp-text">HP: {Math.max(0, state.enemy.hp)}/{state.enemy.max_hp} | Armor: {state.enemy.armor}</div>
+            {state.enemyIntent && state.enemy.hp > 0 && (
+              <div
+                className={`enemy-intent ${state.enemyIntent.warn ? 'enemy-intent-warn' : ''}`}
+                aria-label={`Next enemy move: ${state.enemyIntent.name}${state.enemyIntent.warn ? ' (dangerous)' : ''}`}
+              >
+                Next: {state.enemyIntent.label}
+              </div>
+            )}
             {state.enemy.status_effects.length > 0 && (
               <div className="status-effects-row">
                 {state.enemy.status_effects.map((se, i) => <span key={i} className="status-pill" title={se.name}>{getStatusIcon(se.name)} {se.name}{se.duration > 0 ? ` (${se.duration})` : ''}</span>)}
@@ -236,7 +305,7 @@ export default function CombatOverlay({ combat, onResolve, animationsEnabled }) 
         {/* Player */}
         <div className="arena-bottom">
           <div className={`combat-entity player-entity ${flashes.player ? 'hit-flash shake' : ''}`} id="playerCard">
-            <span className="entity-icon">🥷</span>
+            <span className="entity-icon" aria-hidden="true">{classIcon(state.player.character_class)}</span>
             <h3>{state.player.name}</h3>
             <div className="hp-bar-bg"><div className="hp-bar-fill" style={{ width: `${pPct}%` }} /></div>
             <div className="hp-text">HP: {Math.max(0, state.player.hp)}/{state.player.max_hp} | MP: {state.player.mana}/{state.player.max_mana}</div>
@@ -255,10 +324,11 @@ export default function CombatOverlay({ combat, onResolve, animationsEnabled }) 
         </div>
 
         {/* Log */}
-        <div className="combat-log-area">
+        <div className="combat-log-area" aria-live="polite">
           {logs.map((l, i) => (
-            <div key={i} className={`combat-log-entry ${l.type === 'player' ? 'player-log' : l.type === 'enemy' ? 'enemy-log' : l.type === 'crit' ? 'crit-log' : 'system-log'}`}>
+            <div key={i} className={`combat-log-entry ${LOG_CLASSES[l.type] || 'system-log'}`}>
               {l.text}
+              {l.detail && <span className="combat-log-detail"> ({l.detail})</span>}
             </div>
           ))}
         </div>
@@ -343,18 +413,16 @@ function CombatCinematics({ logs }) {
     const latest = logs[0];
     if (!latest) return;
 
-    const text = latest.text.toLowerCase();
-    if (text.includes('critical') || text.includes('⚡')) {
+    // Story lines don't say "critical" or "miss", so the flash follows the entry's kind.
+    if (latest.kind === 'crit') {
       setFlash('crit');
       setTimeout(() => setFlash(null), 300);
-    } else if (text.includes('miss')) {
+    } else if (['miss', 'glance', 'dodged'].includes(latest.kind)) {
       setFlash('miss');
       setTimeout(() => setFlash(null), 200);
-    } else if (latest.type === 'enemy' || latest.type === 'player') {
-      if (text.includes('damage') || text.includes('strike') || text.includes('uses')) {
-        setFlash('hit');
-        setTimeout(() => setFlash(null), 150);
-      }
+    } else if (latest.kind === 'hit' && (latest.type === 'enemy' || latest.type === 'player')) {
+      setFlash('hit');
+      setTimeout(() => setFlash(null), 150);
     }
   }, [logs]);
 

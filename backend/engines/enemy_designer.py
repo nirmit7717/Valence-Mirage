@@ -24,6 +24,7 @@ import config
 from data.enemies import ENEMY_TEMPLATES
 from data.enemy_archetypes import ARCHETYPES, THREATS, build_enemy_template
 from engines.llm_utils import extract_message_text
+from engines.progression import fight_xp
 from engines.setting import FANTASY, POSTAPOC, SCIFI, genre_of
 from models.combat import EnemyTemplate
 
@@ -447,11 +448,29 @@ class EnemyDesigner:
             return None
 
 
-async def design_enemy(designer, *, narration: str, world_state: dict, player_level: int) -> DesignedEnemy:
-    """Decide who the player fights. Always returns an enemy."""
-    tier = max(1, min(5, player_level))
+async def design_enemy(designer, *, narration: str, world_state: dict, player_level: int,
+                       tier: int | None = None, threat: str | None = None) -> DesignedEnemy:
+    """Decide who the player fights. Always returns an enemy.
+
+    ``tier`` and ``threat`` come from the story (engines/progression.py) during play:
+    the scene decides who the enemy is, the story decides how strong it is. Without
+    them, tier follows player level and threat is read from the scene and the beat.
+    Every enemy is worth ``fight_xp(tier, threat)``.
+    """
+    tier = max(1, min(5, tier if tier is not None else player_level))
+    story_threat = threat if threat in _THREAT_RANK else None
     genre = genre_of(world_state)
-    hint = beat_threat_hint(world_state)
+    hint = story_threat or beat_threat_hint(world_state)
+
+    def _threat(described: str) -> str:
+        return story_threat or _raise_threat(described, hint)
+
+    def _classic(key: str, name: str | None = None) -> EnemyTemplate:
+        # Hand-built templates are only used for standard fights (see the callers).
+        update = {"xp_reward": fight_xp(tier, "standard")}
+        if name:
+            update["name"] = name
+        return ENEMY_TEMPLATES[key].model_copy(deep=True, update=update)
 
     spec = None
     if designer is not None:
@@ -460,29 +479,29 @@ async def design_enemy(designer, *, narration: str, world_state: dict, player_le
         except Exception as exc:
             logger.warning(f"Enemy designer crashed; using heuristic: {exc}")
     if spec is not None:
-        threat = _raise_threat(spec.threat, hint)
-        template = build_enemy_template(spec.name, spec.archetype, threat, tier, spec.moves, genre)
-        return DesignedEnemy(template, "", "designed", spec.archetype, threat, spec.description)
+        chosen = _threat(spec.threat)
+        template = build_enemy_template(spec.name, spec.archetype, chosen, tier, spec.moves, genre)
+        return DesignedEnemy(template, "", "designed", spec.archetype, chosen, spec.description)
 
     phrase = extract_enemy_phrase(narration)
     if phrase:
-        threat = _raise_threat(infer_threat(phrase.words), hint)
+        chosen = _threat(infer_threat(phrase.words))
         classic = ENEMY_TEMPLATES.get(phrase.classic_key) if phrase.classic_key else None
-        if classic and genre == FANTASY and threat == "standard" and abs(classic.tier - tier) <= 1:
-            template = classic.model_copy(deep=True, update={"name": phrase.name})
-            return DesignedEnemy(template, phrase.classic_key, "narrator", CLASSIC_ARCHETYPES[phrase.classic_key], threat)
-        template = build_enemy_template(phrase.name, phrase.archetype, threat, tier, None, genre)
-        return DesignedEnemy(template, "", "narrator", phrase.archetype, threat)
+        if classic and genre == FANTASY and chosen == "standard" and abs(classic.tier - tier) <= 1:
+            template = _classic(phrase.classic_key, phrase.name)
+            return DesignedEnemy(template, phrase.classic_key, "narrator", CLASSIC_ARCHETYPES[phrase.classic_key], chosen)
+        template = build_enemy_template(phrase.name, phrase.archetype, chosen, tier, None, genre)
+        return DesignedEnemy(template, "", "narrator", phrase.archetype, chosen)
 
-    threat = _raise_threat("standard", hint)
+    chosen = _threat("standard")
     if genre in _GENRE_FALLBACKS:
         name, archetype = random.choice(_GENRE_FALLBACKS[genre])
-        template = build_enemy_template(name, archetype, threat, tier, None, genre)
-        return DesignedEnemy(template, "", "fallback", archetype, threat)
+        template = build_enemy_template(name, archetype, chosen, tier, None, genre)
+        return DesignedEnemy(template, "", "fallback", archetype, chosen)
 
-    key = classic_fallback_key(world_state, player_level)
+    key = classic_fallback_key(world_state, tier)
     archetype = CLASSIC_ARCHETYPES.get(key, "soldier")
-    if threat != "standard":
-        template = build_enemy_template(ENEMY_TEMPLATES[key].name, archetype, threat, tier, None, genre)
-        return DesignedEnemy(template, "", "fallback", archetype, threat)
-    return DesignedEnemy(ENEMY_TEMPLATES[key].model_copy(deep=True), key, "fallback", archetype, threat)
+    if chosen != "standard":
+        template = build_enemy_template(ENEMY_TEMPLATES[key].name, archetype, chosen, tier, None, genre)
+        return DesignedEnemy(template, "", "fallback", archetype, chosen)
+    return DesignedEnemy(_classic(key), key, "fallback", archetype, chosen)

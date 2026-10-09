@@ -6,18 +6,12 @@ the client, and a refresh mid-fight gets the same fight back.
 
 import pytest
 
-from helpers import act, create_session, get_session, make_intent
+from helpers import create_session, get_session, start_planned_fight
 from models.character import CLASS_ABILITIES, CharacterClass
 
 
 def _start_fight(client, app_state, **session_body):
-    app_state.intent_parser.next_intent = make_intent(description="inspect stonework")
-    app_state.narrator.text = "A goblin scavenger lunges from the shadows."
-    session_id, headers = create_session(client, **session_body)
-    get_session(session_id).world_state["combat_tension"] = 5
-    body = act(client, session_id, headers).json()
-    assert body["combat_started"] is True
-    return session_id, headers, body["combat_data"]
+    return start_planned_fight(client, app_state, **session_body)
 
 
 def _resolve(client, session_id, headers, combat, **overrides):

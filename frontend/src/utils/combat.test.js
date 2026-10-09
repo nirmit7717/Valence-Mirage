@@ -2,10 +2,14 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  applyEffect,
   buildResolvePayload,
   cloneCombatState,
   createCombatState,
   enemyIntro,
+  getDamageModifier,
+  getStatusIcon,
+  planIntent,
   resolveEnemyTurn,
   resolvePlayerAttack,
   resolvePlayerItem,
@@ -129,4 +133,86 @@ test('a defeat always reports 0 HP', () => {
   const state = createCombatState(combatData());
   state.player.hp = -7;
   assert.equal(buildResolvePayload('defeat', state).player_hp, 0);
+});
+
+// ─── Enemy effects (Task 5) ───
+
+const woundedEnemy = (abilities) => {
+  const state = createCombatState(combatData());
+  state.enemy.abilities = abilities;
+  state.enemy.hp = 6; // below half: the enemy reaches for its abilities
+  state.enemyIntent = planIntent(state); // plan with the new abilities and HP
+  return state;
+};
+
+test('empowered raises damage by half, lasts at most two turns and has an icon', () => {
+  const enemy = { status_effects: [] };
+  applyEffect(enemy, 'empowered', 3);
+  assert.deepEqual(enemy.status_effects, [{ name: 'empowered', duration: 2 }]);
+  assert.equal(getDamageModifier(enemy), 1.5);
+  assert.equal(getStatusIcon('empowered'), '💢');
+});
+
+test('a self-buff empowers the enemy instead of hitting the player', (t) => {
+  t.mock.method(Math, 'random', () => 0.5);
+  const state = woundedEnemy([{ name: 'Blood Frenzy', status_effect: 'empowered', status_duration: 3, target: 'self' }]);
+
+  const turn = resolveEnemyTurn(state);
+
+  assert.deepEqual(state.enemy.status_effects.map(e => e.name), ['empowered']);
+  assert.deepEqual(state.player.status_effects, []);
+  assert.equal(state.player.hp, 50);
+  assert.match(turn.log, /Blood Frenzy/);
+  assert.equal(turn.damage, undefined);
+});
+
+test('a status-only move applies its effect without damage', (t) => {
+  t.mock.method(Math, 'random', () => 0.5);
+  const state = woundedEnemy([{ name: 'Hex', status_effect: 'weaken', status_duration: 2 }]);
+
+  const turn = resolveEnemyTurn(state);
+
+  assert.equal(state.player.hp, 50);
+  assert.deepEqual(state.player.status_effects.map(e => e.name), ['weaken']);
+  assert.match(turn.log, /Hex/);
+});
+
+test('an empowered enemy hits harder', (t) => {
+  t.mock.method(Math, 'random', () => 0.5);
+  const calm = createCombatState(combatData());
+  const raging = createCombatState(combatData());
+  applyEffect(raging.enemy, 'empowered', 2);
+
+  const normal = resolveEnemyTurn(calm).damage.amount;
+  const boosted = resolveEnemyTurn(raging).damage.amount;
+
+  assert.equal(boosted, Math.floor(normal * 1.5));
+});
+
+// ─── Story-aware log (Task 6) ───
+
+test('only the story line of each log entry goes to the server', () => {
+  const state = createCombatState({ ...combatData(), genre: 'scifi', scene: 'Neon rain.' });
+  state.logEntries = [
+    { text: 'Sparks burst from the drone\u2019s chassis', detail: '\u22127', type: 'player' },
+    { text: 'The drone slams into you', detail: '\u22125', type: 'enemy' },
+  ];
+
+  const { combat_log: log } = buildResolvePayload('victory', state);
+
+  assert.deepEqual(log, [
+    { actor: 'player', message: 'Sparks burst from the drone\u2019s chassis' },
+    { actor: 'enemy', message: 'The drone slams into you' },
+  ]);
+  assert.equal(state.genre, 'scifi');
+  assert.equal(state.scene, 'Neon rain.');
+});
+
+test('results say what kind of moment they were', (t) => {
+  t.mock.method(Math, 'random', () => 0.5);
+  const state = createCombatState(combatData());
+  assert.equal(resolvePlayerAttack(state, 'Iron Sword', '1d8+2').kind, 'hit');
+  const enemyTurn = resolveEnemyTurn(state);
+  assert.equal(enemyTurn.kind, 'hit');
+  assert.equal(enemyTurn.move, 'Attack');
 });

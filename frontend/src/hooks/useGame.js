@@ -5,6 +5,7 @@
 import { useState, useCallback, useEffect, useRef } from 'react';
 import * as api from '../api';
 import { buildResolvePayload, createCombatState } from '../utils/combat';
+import { xpBadgeText } from '../utils/progression';
 import { getThemeFromCampaign } from '../utils/theme';
 
 const STORY_LOG_LIMIT = 50;
@@ -35,6 +36,12 @@ export function useGame() {
   const [pendingResponse, setPendingResponse] = useState(null); // queued until dice animation completes
   // Every scene shown so far ({ turn, playerInput, html }), so the player can page back.
   const [storyLog, setStoryLog] = useState([]);
+  // Level-ups from the last response (server `level_up` list), shown in a banner.
+  const [levelUps, setLevelUps] = useState(null);
+  const dismissLevelUp = useCallback(() => setLevelUps(null), []);
+  const announceLevelUps = useCallback((list) => {
+    if (Array.isArray(list) && list.length) setLevelUps(list);
+  }, []);
   const msgIdRef = useRef(0);
   const restoreSessionRef = useRef(null);
 
@@ -118,6 +125,7 @@ export function useGame() {
           mana: data.player.mana, maxMana: data.player.max_mana,
           stats: data.player.stats,
           beat: data.campaign?.acts?.[0]?.beats?.[0]?.title || '—',
+          progress: data.story_progress || null,
           inventory: data.player.inventory || [],
           npcs: data.npcs || [],
           effects: [],
@@ -194,6 +202,7 @@ export function useGame() {
         maxMana: data.player?.max_mana || 50,
         stats: data.player?.stats,
         beat: data.current_beat || data.campaign?.acts?.[0]?.beats?.[0]?.title || '—',
+        progress: data.story_progress || null,
         inventory: data.inventory || [],
         npcs: Object.values(data.npcs || {}),
         effects: [],
@@ -280,7 +289,13 @@ export function useGame() {
     if (data.state_changes?.items_gained?.length) {
       data.state_changes.items_gained.forEach(item => metaHtml += `<span class="dice-badge choice">🎁 Loot: ${item}</span>`);
     }
-    if (data.level_up?.new_level) metaHtml += `<span class="dice-badge crit-success">⬆️ Level ${data.level_up.new_level}!</span>`;
+    const xpText = xpBadgeText(data.xp_gained);
+    if (xpText) metaHtml += `<span class="dice-badge xp-badge">⭐ ${xpText}</span>`;
+    if (Array.isArray(data.level_up) && data.level_up.length) {
+      const level = data.level_up[data.level_up.length - 1].level;
+      metaHtml += `<span class="dice-badge crit-success">⬆️ Level ${level}!</span>`;
+      announceLevelUps(data.level_up);
+    }
 
     // NPC dialogue
     let npcHtml = '';
@@ -327,6 +342,7 @@ export function useGame() {
       mana: data.player_mana,
       maxMana: data.max_mana || prev.maxMana,
       beat: data.current_beat || prev.beat,
+      progress: data.story_progress || prev.progress,
       turn: data.turn_number ?? prev.turn,
       inventory: data.inventory || prev.inventory,
       npcs: data.npcs || prev.npcs,
@@ -364,7 +380,7 @@ export function useGame() {
 
     // Combat/victory/game-over activation is handled by dismissNarration()
     // which checks narration.pendingOutcome after the player reads the narration
-  }, [addMessage, showNotice, recordScene]);
+  }, [addMessage, showNotice, recordScene, announceLevelUps]);
 
   // Called by DiceRoll when animation finishes — processes the queued response
   const onDiceAnimationComplete = useCallback(() => {
@@ -429,9 +445,12 @@ export function useGame() {
 
       const po = data.pending_outcome;
 
+      announceLevelUps(data.level_up);
       if (result === 'victory') {
         let msg = '<strong>🏆 Victory!</strong>';
-        if (data.rewards?.xp) msg += `<br/>+${data.rewards.xp} XP`;
+        // xp_gained includes the chapter's XP when the fight closed it.
+        const xpText = xpBadgeText(data.xp_gained ?? data.rewards?.xp);
+        if (xpText) msg += `<br/>${xpText}`;
         if (data.rewards?.loot_descriptions) data.rewards.loot_descriptions.forEach(l => msg += `<br/>${l}`);
         msg += `<br/><br/><em>The battle is won.</em>`;
         addMessage('system', msg);
@@ -476,7 +495,14 @@ export function useGame() {
         xpToNext: data.player_xp_to_next || prev.xpToNext,
         inventory: data.inventory || prev.inventory,
         objective: data.campaign_objective || prev.objective,
+        // A fight is a campaign turn, and winning a planned one moves the story to its next beat.
+        beat: data.current_beat || prev.beat,
+        progress: data.story_progress || prev.progress,
+        turn: data.turn_number ?? prev.turn,
       } : prev);
+      if (data.turn_number != null) {
+        setSessionInfo(prev => prev ? { ...prev, turn: data.turn_number } : prev);
+      }
 
       // Legacy fallback — shouldn't trigger with pending_outcome system
 
@@ -491,7 +517,7 @@ export function useGame() {
         showNotice(`Combat resolution failed: ${e.detail || e.message}`);
       }
     }
-  }, [sessionId, addMessage, showNotice, recordScene]);
+  }, [sessionId, addMessage, showNotice, recordScene, announceLevelUps]);
 
   const dismissNarration = useCallback(() => {
     setNarration(prev => {
@@ -536,7 +562,7 @@ export function useGame() {
   return {
     sessionId, sessionInfo, messages, sidebar, loading, narration,
     combat, campaignEnded, gameOver, victory, theme, busy,
-    diceResult, pendingResponse, storyLog,
+    diceResult, pendingResponse, storyLog, levelUps, dismissLevelUp,
     startSession, restoreSession, submitAction, resolveCombat,
     dismissNarration,
     onDiceAnimationComplete,

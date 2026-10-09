@@ -8,7 +8,7 @@ from data.enemies import ENEMY_TEMPLATES
 from data.items import item_from_definition
 from engines.combat_engine import CombatEngine
 from engines.state_manager import StateManager
-from helpers import act, create_session, get_session, make_intent
+from helpers import create_session, get_session, start_planned_fight
 from models.combat import CombatState
 
 
@@ -72,13 +72,8 @@ def test_combat_rewards_produce_normalized_loot():
 
 
 def _start_forced_combat(client, app_state, character_class: str) -> dict:
-    app_state.intent_parser.next_intent = make_intent(description="inspect stonework")
-    app_state.narrator.text = "A goblin scavenger lunges from the shadows."
-    session_id, headers = create_session(client, character_class=character_class)
-    get_session(session_id).world_state["combat_tension"] = 5
-    body = act(client, session_id, headers).json()
-    assert body["combat_started"] is True
-    return body["combat_data"]
+    _, _, combat_data = start_planned_fight(client, app_state, character_class=character_class)
+    return combat_data
 
 
 @pytest.mark.parametrize(("character_class", "armor"), [("warrior", 2), ("rogue", 1), ("cleric", 3), ("wizard", 0)])

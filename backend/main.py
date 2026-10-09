@@ -20,12 +20,14 @@ from engines.combat_engine import CombatEngine
 from engines.deviation import evaluate_alignment, get_warning_message
 from engines.engagement_tracker import EngagementTracker
 from engines.enemy_designer import EnemyDesigner, design_enemy
+from engines import pacing, progression
+from engines.narrator import strip_choice_lines
 from engines.setting import genre_of
 from models.profile import PlayerProfile, get_beat_weights, get_narration_params
 from models.action import ActionIntent
 from models.game_state import GameSession, Turn, Item
 from models.outcome import Outcome, StateChanges, ProbabilityScore, ScoreBreakdown
-from models.combat import CombatState, CombatAction, CombatActionType
+from models.combat import CombatState, CombatAction, CombatActionType, normalize_enemy_ability
 from database import Database
 from data.items import item_from_definition
 from rag import RuleRetriever, VectorStore
@@ -207,8 +209,10 @@ class ActionResponse(BaseModel):
     max_hp: int = 50
     max_mana: int = 50
     inventory: list[dict] = []
-    level_up: dict = {}
+    xp_gained: int = 0  # everything this turn earned (turn + finished beat), engines/progression.py
+    level_up: list[dict] = []  # one entry per level gained this turn, oldest first
     current_beat: str | None = None
+    story_progress: dict | None = None  # chapter / total / act / beat (engines/pacing.story_progress)
     npc_dialogue: dict | None = None
     npcs: list[dict] = []
     choices: list[str] = []
@@ -414,6 +418,7 @@ async def create_session(
         },
         "opening_narration": clean_narration(opening_narration),
         "choices": extract_choices(opening_narration),
+        "story_progress": _story_progress(session),
     }
     if guest_token:
         # Shown once; the client must send it back as X-Session-Token on every session call.
@@ -429,6 +434,7 @@ async def get_session(session: GameSession = Depends(get_authorized_session)):
 @app.get("/session/{session_id}/hydrate")
 async def hydrate_session(session: GameSession = Depends(get_authorized_session)):
     """Return full session state for frontend hydration after page refresh."""
+    progression.normalize(session.player)  # sessions saved under the old XP curve
     campaign = session.world_state.get("campaign", {})
     combat_ws = session.world_state.get("combat")
     campaign_ended = session.world_state.get("campaign_ended", False)
@@ -477,6 +483,7 @@ async def hydrate_session(session: GameSession = Depends(get_authorized_session)
         # Story so far, for paging back through earlier narration after a refresh.
         "story_log": _story_log(session),
         "current_beat": current_beat_title,
+        "story_progress": _story_progress(session),
         "campaign_ended": campaign_ended,
         "campaign_result": _campaign_result(session.world_state) if campaign_ended else None,
         "warning_count": session.world_state.get("warning_count", 0),
@@ -504,30 +511,6 @@ async def list_sessions(user: dict = Depends(require_auth)):
     if user.get("role") == "admin":
         return await db.list_sessions()
     return await db.list_sessions(owner_user_id=user["id"])
-
-
-def _is_campaign_complete(bp: CampaignBlueprint) -> bool:
-    """Check if all beats in the campaign template have been completed.
-    
-    Returns True if we're at or past the last beat of the last act.
-    Since advance_beat() won't increment past the final beat, we check
-    if we're ON the final beat (the caller should advance first, then
-    check — but if the final beat was just completed, we detect it here).
-    """
-    if not bp.acts:
-        return True
-    max_act = max(a.act_id for a in bp.acts)
-    last_act = next((a for a in bp.acts if a.act_id == max_act), None)
-    if not last_act or not last_act.beats:
-        return True
-    max_beat = max(b.beat_id for b in last_act.beats)
-    # Past the end, or ON the final beat (advance won't go further)
-    return bp.current_act > max_act or (bp.current_act == max_act and bp.current_beat >= max_beat)
-
-
-def _get_total_beats(bp: CampaignBlueprint) -> int:
-    """Count total beats in the blueprint."""
-    return sum(len(a.beats) for a in bp.acts)
 
 
 @app.post("/session/{session_id}/action", response_model=ActionResponse)
@@ -571,6 +554,7 @@ async def submit_action(req: ActionRequest, session: GameSession = Depends(get_a
             choices=["Attack", "Use Ability", "Defend"],
             combat_started=True,
             combat_data=_build_combat_payload(session, active_combat),
+            story_progress=_story_progress(session),
             dice_debug=None,
             warning_count=session.world_state.get("warning_count", 0),
             warning_message=None,
@@ -602,24 +586,19 @@ async def submit_action(req: ActionRequest, session: GameSession = Depends(get_a
 
     campaign_data = session.world_state.get("campaign")
     current_beat_title = None
-    combat_beat_available = False
     if campaign_data:
         bp = CampaignBlueprint(**campaign_data)
         beat = planner.get_current_beat(bp)
         if beat:
             world_context += f" Current story beat: {beat.title} — {beat.description}"
             current_beat_title = beat.title
-            if beat.type == "combat":
-                combat_beat_available = True
         # Keep the persisted blueprint position; do not reset it to act one on
         # every action.
         session.world_state["current_act"] = bp.current_act
         session.world_state["current_beat"] = bp.current_beat
 
-    # Track pacing — two independent counters
+    # Narrative turns since the last dice roll (forces an occasional roll)
     turns_since_roll = session.world_state.get("turns_since_roll", 0)
-    turns_since_combat = session.world_state.get("turns_since_combat", 0)
-    turns_in_beat = session.world_state.get("turns_in_beat", 0)
 
     # ── VALIDATION FIRST (before any API calls) ──
     VALIDATION_ENABLED = True  # Kill switch: set False to bypass all validation
@@ -777,8 +756,6 @@ async def submit_action(req: ActionRequest, session: GameSession = Depends(get_a
     # 2. Check if roll is needed
     if not intent.requires_roll:
         turns_since_roll += 1
-        turns_in_beat += 1
-        
         # Force a probabilistic roll if 3 narrative turns have passed
         if turns_since_roll >= 3:
             intent.requires_roll = True
@@ -786,75 +763,24 @@ async def submit_action(req: ActionRequest, session: GameSession = Depends(get_a
             intent.description = f"While attempting to {intent.description}, a sudden event disrupts the peace!"
             intent.relevant_stat = "dexterity"
             turns_since_roll = 0
-            
     else:
         turns_since_roll = 0
-        turns_in_beat += 1
-
     session.world_state["turns_since_roll"] = turns_since_roll
-    session.world_state["turns_in_beat"] = turns_in_beat
 
-    # ── Combat Tension Tracker ──
-    # Accumulates tension each turn based on action risk and context.
-    # Triggers combat when tension reaches threshold, ensuring reliable but contextual encounters.
-    combat_tension = session.world_state.get("combat_tension", 0)
-    # Profile-aware encounter threshold
-    from engines.encounter_tuner import get_encounter_params
-    _encounter_params = get_encounter_params(PlayerProfile(**_profile_data) if _profile_data else None)
-    combat_tension_threshold = _encounter_params["tension_threshold"]
+    # ── Combat tension ──
+    # Builds with risky actions and hostile scenes. It can only start an unplanned
+    # fight where the turn budget allows it (see engines/pacing.py).
+    tension_ready = _update_combat_tension(session, intent)
+    bp = CampaignBlueprint(**campaign_data) if campaign_data else None
 
-    if session.world_state.get("combat"):
-        # Already in combat — don't accumulate
-        combat_tension = 0
-    else:
-        # Build tension based on action and context
-        combat_tension += 1  # Base: +1 per turn
-
-        # Risky actions increase tension faster
-        if hasattr(intent, 'risk') and intent.risk in ("high", "extreme"):
-            combat_tension += 2
-        elif intent.action_type in ("attack", "cast_spell", "intimidate"):
-            combat_tension += 2
-
-        # Hostile context increases tension
-        situation_lower = session.world_state.get("situation", "").lower()[-200:]
-        hostile_words = ["enemy", "hostile", "threat", "undead", "skeleton", "bandit",
-                         "guard", " patrol", "monster", "beast", "ambush", "attack",
-                         "dark figure", "creature", "demon", "corrupt"]
-        if any(w in situation_lower for w in hostile_words):
-            combat_tension += 1
-
-        # Combat beat available → increase tension faster
-        if combat_beat_available:
-            combat_tension += 1
-
-    session.world_state["combat_tension"] = combat_tension
-    logger.info(f"Combat tension: {combat_tension}/{combat_tension_threshold}")
-
-    # ── Trigger combat when tension reaches threshold ──
-    pending_combat = session.world_state.get("pending_combat", False)
-    if (combat_beat_available or combat_tension >= combat_tension_threshold) and not session.world_state.get("combat"):
-        session.world_state["combat_tension"] = 0
-        session.world_state["pending_combat"] = True
-        pending_combat = True
-        logger.info(
-            "Combat triggered: %s, flagging narrator",
-            "hard combat beat" if combat_beat_available else f"tension {combat_tension} >= {combat_tension_threshold}",
-        )
-
-    # Build combat context for narrator if pending
-    _combat_ctx = None
-    if pending_combat:
-        _combat_ctx = (
-            "COMBAT_REQUIRED: True. A combat encounter must begin NOW. "
-            "Naturally introduce ONE hostile enemy that fits this campaign's setting, the current location, and the story. "
-            "Give it a specific, descriptive name that belongs in this world (e.g., in a cyberpunk city: "
-            "'a corporate security drone'; in a haunted forest: 'a corrupted wolf'). Never use a creature that "
-            "does not fit the setting. Describe how it looks and how it threatens the player. "
-            "The combat will be resolved by the player."
-        )
+    engages_scene = _engages_scene(intent, classification)
+    xp = progression.XpLedger()  # everything this turn earns (turn + finished beat)
 
     if not intent.requires_roll:
+        # A narrative action moves the beat on when it engages with the scene.
+        moved_on = intent.action_type == "choice" or engages_scene
+        plan = _plan_turn(session, bp, moved_on, tension_ready)
+        _combat_ctx = _combat_context(plan)
         try:
             narration = await narrator.narrate(
                 intent=intent,
@@ -867,6 +793,7 @@ async def submit_action(req: ActionRequest, session: GameSession = Depends(get_a
                 turn_history=session.turn_history,
                 combat_context=_combat_ctx,
                 narration_params=_narration_params,
+                pacing=plan["brief"],
             )
         except Exception as e:
             logger.error(f"No-roll narration failed: {e}", exc_info=True)
@@ -879,36 +806,14 @@ async def submit_action(req: ActionRequest, session: GameSession = Depends(get_a
             if intent.uses_resource and intent.resource_cost > 0
             else StateChanges()
         )
-        level_up = sm.apply_changes(session, intent, no_roll_changes, "narrative_choice")
+        sm.apply_changes(session, intent, no_roll_changes, "narrative_choice", ledger=xp)
 
-        # If pending_combat was flagged, start combat with the enemy the narrator named
-        # (or a context-appropriate fallback).
-        combat_started_no_roll = False
-        combat_data_no_roll = None
-        combat_source_no_roll = None
-        if pending_combat and not session.world_state.get("combat"):
-            combat_data_no_roll, combat_source_no_roll = await _start_combat(session, narration)
-            combat_started_no_roll = True
-
-        if campaign_data:
-            bp = CampaignBlueprint(**campaign_data)
-            beat = planner.get_current_beat(bp)
-            if beat:
-                # Beat advancement for narrative choices (a fight that just started
-                # resolves the beat itself on victory, so don't advance past it here)
-                if beat.type != "combat" and not combat_started_no_roll:
-                    if intent.action_type == "choice" or intent.scale in ["moderate", "major", "extreme", "cosmic"] or turns_in_beat >= 4:
-                        bp_adv = planner.advance_beat(bp)
-                        if bp_adv.current_act == bp.current_act and bp_adv.current_beat == bp.current_beat and _is_campaign_complete(bp):
-                            await _end_campaign(db, session, "victory")
-                        else:
-                            bp = bp_adv
-                            session.world_state["campaign"] = bp.model_dump()
-                            beat = planner.get_current_beat(bp)
-                            session.world_state["turns_in_beat"] = 0
-                
-                if beat:
-                    current_beat_title = beat.title
+        # Apply this turn's pacing: finish the beat, or start the fight the narration set up.
+        combat_data_no_roll, combat_source_no_roll = await _apply_turn_plan(db, session, plan, narration, xp)
+        combat_started_no_roll = combat_data_no_roll is not None
+        current_beat_title = _current_beat_title(session) or current_beat_title
+        if session.world_state.get("campaign_ended"):
+            narration = strip_choice_lines(narration)  # the ending offers no further actions
 
         turn = Turn(
             turn_number=session.turn_number,
@@ -943,8 +848,10 @@ async def submit_action(req: ActionRequest, session: GameSession = Depends(get_a
             max_hp=session.player.max_hp,
             max_mana=session.player.max_mana,
             inventory=[{"name": i.name, "type": i.item_type} for i in session.player.inventory],
-            level_up=level_up,
+            xp_gained=xp.gained,
+            level_up=xp.level_ups,
             current_beat=current_beat_title,
+            story_progress=_story_progress(session),
             npc_dialogue=npc_dialogue,
             npcs=[{"name": n.get("personality",{}).get("name","?"), "role": n.get("personality",{}).get("role","?"), "disposition": n.get("disposition",0)} for n in session.world_state.get("npcs", {}).values()],
             # No choices once the story is over or a fight begins — the card then
@@ -1002,6 +909,12 @@ async def submit_action(req: ActionRequest, session: GameSession = Depends(get_a
     roll = dice_engine.roll_d20()
     outcome_result = dice_engine.resolve(roll, score.dice_threshold, intent.action_type)
 
+    # 5b. Pacing is decided before narrating, so the storyteller knows what this turn does.
+    # A successful roll moves the beat on when the action engages with the scene.
+    moved_on = outcome_result in _BEAT_ADVANCING_OUTCOMES and engages_scene
+    plan = _plan_turn(session, bp, moved_on, tension_ready)
+    _combat_ctx = _combat_context(plan)
+
     # 6. Narrative Generation
     try:
         narration = await narrator.narrate(
@@ -1015,13 +928,14 @@ async def submit_action(req: ActionRequest, session: GameSession = Depends(get_a
             turn_history=session.turn_history,
             combat_context=_combat_ctx,
             narration_params=_narration_params,
+            pacing=plan["brief"],
         )
     except Exception as e:
         narration = f"Your {intent.action_type} results in {outcome_result}."
 
     # 7. State changes
     state_changes = _compute_state_changes(intent, outcome_result, roll)
-    level_up = sm.apply_changes(session, intent, state_changes, outcome_result)
+    sm.apply_changes(session, intent, state_changes, outcome_result, ledger=xp)
 
     # 7b. Check for player death
     is_dead, death_message = _check_player_death(session)
@@ -1051,7 +965,9 @@ async def submit_action(req: ActionRequest, session: GameSession = Depends(get_a
             player_xp_to_next=session.player.xp_to_next,
             max_hp=session.player.max_hp, max_mana=session.player.max_mana,
             inventory=[{"name": i.name, "type": i.item_type} for i in session.player.inventory],
-            level_up={}, current_beat=current_beat_title, npc_dialogue=None, npcs=[],
+            xp_gained=xp.gained, level_up=xp.level_ups,
+            current_beat=current_beat_title, story_progress=_story_progress(session),
+            npc_dialogue=None, npcs=[],
             choices=[], combat_started=False, combat_data=None, campaign_ended=False,
             game_over=False, victory=False, campaign_objective=campaign_objective,
             dice_result={"rolled": roll, "target": score.dice_threshold,
@@ -1079,42 +995,12 @@ async def submit_action(req: ActionRequest, session: GameSession = Depends(get_a
     session.world_state["situation"] = narration
     session.turn_number += 1
 
-    # 11. Advance story beat & check for combat triggers
-    combat_started = False
-    combat_data = None
-    combat_source = None
-    if campaign_data:
-        bp = CampaignBlueprint(**campaign_data)
-        beat = planner.get_current_beat(bp)
-        
-        if beat:
-            if beat.type == "combat":
-                # Beat requires combat — narrator already introduced it via pending_combat flag.
-                # Start combat with the enemy the narrator named, or a contextual fallback.
-                if not session.world_state.get("combat"):
-                    combat_data, combat_source = await _start_combat(session, narration)
-                    combat_started = True
-                    combat_beat_available = True
-            else:
-                # Advance if successfully addressed or max pacing reached
-                if outcome_result in ["success", "critical_success", "partial_success"] or narrative_bonus > 0.0 or turns_in_beat >= 4:
-                    bp_adv = planner.advance_beat(bp)
-                    if bp_adv.current_act == bp.current_act and bp_adv.current_beat == bp.current_beat and _is_campaign_complete(bp):
-                        await _end_campaign(db, session, "victory")
-                    else:
-                        bp = bp_adv
-                        session.world_state["campaign"] = bp.model_dump()
-                        beat = planner.get_current_beat(bp)
-                        session.world_state["turns_in_beat"] = 0
-
-                # Handle pending_combat on a non-combat beat
-                if (pending_combat and not combat_started and not session.world_state.get("combat")
-                        and not session.world_state.get("campaign_ended")):
-                    combat_data, combat_source = await _start_combat(session, narration)
-                    combat_started = True
-        
-        if beat:
-            current_beat_title = beat.title
+    # 11. Apply this turn's pacing: finish the beat, or start the fight the narration set up.
+    combat_data, combat_source = await _apply_turn_plan(db, session, plan, narration, xp)
+    combat_started = combat_data is not None
+    current_beat_title = _current_beat_title(session) or current_beat_title
+    if session.world_state.get("campaign_ended"):
+        narration = strip_choice_lines(narration)  # the ending offers no further actions
     # 12. Record turn
     turn = Turn(
         turn_number=session.turn_number,
@@ -1175,8 +1061,10 @@ async def submit_action(req: ActionRequest, session: GameSession = Depends(get_a
         max_hp=session.player.max_hp,
         max_mana=session.player.max_mana,
         inventory=[{"name": i.name, "type": i.item_type} for i in session.player.inventory],
-        level_up=level_up,
+        xp_gained=xp.gained,
+        level_up=xp.level_ups,
         current_beat=current_beat_title,
+        story_progress=_story_progress(session),
         combat_source=combat_source,
         combat_beat_available=False,
         current_act=session.world_state.get("current_act", 1),
@@ -1240,6 +1128,14 @@ async def _resolve_combat_locked(req: CombatResolveRequest, session: GameSession
     session.player.mana = req.player_mana
     _consume_items(session.player, req.items_used)
 
+    # A fight is one campaign turn. Decide now whether it finishes the current beat,
+    # so the post-fight narration can be written for what comes next.
+    world = session.world_state
+    session.turn_number += 1
+    world["turns_in_beat"] = world.get("turns_in_beat", 0) + 1
+    fight_closes_beat = req.result == "victory" and _fight_closes_beat(session)
+
+    xp = progression.XpLedger()  # fight XP, plus the beat's XP when the fight closes it
     rewards = {"xp": 0, "items": [], "loot_descriptions": []}
     narration = ""
     choices = []
@@ -1250,46 +1146,54 @@ async def _resolve_combat_locked(req: CombatResolveRequest, session: GameSession
         rewards["items"] = rolled["items"]
         rewards["loot_descriptions"] = rolled["loot_descriptions"]
         session.player.inventory.extend(rewards["items"])
-        session.player.gain_xp(rewards["xp"])
+        xp.award(session.player, rewards["xp"], "fight")
 
-        # Generate post-combat narration using the main narrator (full campaign context)
         log_summary = "; ".join([f"{e.get('actor','')}: {e.get('message','')}" for e in req.combat_log[-4:]])
-        combat_intent = ActionIntent(
-            action_type="explore",
-            description=f"After defeating {enemy_name} in combat ({req.turns_taken} turns, key moments: {log_summary}), survey the aftermath and continue the journey.",
-            scale="moderate",
-            risk="low",
-            relevant_stat="wisdom",
-            requires_roll=False,
-        )
-        try:
-            narration = await narrator.narrate(
-                intent=combat_intent,
-                outcome_result="success",
-                roll=0,
-                threshold=0,
+        campaign = world.get("campaign")
+        if fight_closes_beat and campaign and pacing.is_final_beat(campaign):
+            # The final fight is won: the campaign's ending, with no further choices.
+            narration = await narrator.narrate_epilogue(
                 player=session.player,
-                world_state=session.world_state,
+                world_state=world,
+                final_enemy=enemy_name,
+                fight_summary=f"{req.turns_taken} rounds; key moments: {log_summary}" if log_summary else "",
                 turn_history=session.turn_history,
                 narration_params=narration_params,
             )
-        except Exception:
-            narration = f"{enemy_name} falls. The battle is won. What lies ahead?"
-        
+        else:
+            # Post-combat narration from the main narrator (full campaign context)
+            combat_intent = ActionIntent(
+                action_type="explore",
+                description=f"After defeating {enemy_name} in combat ({req.turns_taken} turns, key moments: {log_summary}), survey the aftermath and continue the journey.",
+                scale="moderate",
+                risk="low",
+                relevant_stat="wisdom",
+                requires_roll=False,
+            )
+            progress = pacing.story_progress(campaign) if campaign else None
+            moment = pacing.AFTER_FIGHT if fight_closes_beat else pacing.DEVELOP
+            try:
+                narration = await narrator.narrate(
+                    intent=combat_intent,
+                    outcome_result="success",
+                    roll=0,
+                    threshold=0,
+                    player=session.player,
+                    world_state=session.world_state,
+                    turn_history=session.turn_history,
+                    narration_params=narration_params,
+                    pacing={**progress, "moment": moment} if progress else None,
+                )
+            except Exception:
+                narration = f"{enemy_name} falls. The battle is won. What lies ahead?"
+
         choices = extract_choices(narration)
         session.world_state["situation"] = narration
 
-        # Advance beat on victory
-        campaign_data = session.world_state.get("campaign")
-        if campaign_data:
-            planner = app.state.campaign_planner
-            bp = CampaignBlueprint(**campaign_data)
-            bp_adv = planner.advance_beat(bp)
-            if bp_adv.current_act == bp.current_act and bp_adv.current_beat == bp.current_beat and _is_campaign_complete(bp):
-                await _end_campaign(db, session, "victory")
-            else:
-                bp = bp_adv
-                session.world_state["campaign"] = bp.model_dump()
+        # A planned fight finishes its beat on victory (the final one ends the campaign).
+        # A surprise fight only closes its story beat if the beat has run out of turns.
+        if fight_closes_beat:
+            await _complete_beat(db, session, xp)
 
     elif req.result == "defeat":
         combat_intent = ActionIntent(
@@ -1335,17 +1239,42 @@ async def _resolve_combat_locked(req: CombatResolveRequest, session: GameSession
 
     # Clean up combat state
     session.world_state.pop("combat", None)
+
+    # The fight is recorded as a turn of its own (history, story log, engagement).
+    fight_turn = Turn(
+        turn_number=session.turn_number,
+        player_input=f"Fought {enemy_name}",
+        intent=ActionIntent(action_type="combat", description=f"Fight against {enemy_name}", scale="moderate",
+                            risk="high", relevant_stat="strength", requires_roll=False),
+        score=None,
+        roll=0,
+        outcome=Outcome(result="combat_victory" if req.result == "victory" else "combat_defeat",
+                        roll=0, threshold=0, narration=narration),
+    )
+    session.turn_history.append(fight_turn)
+    await db.save_turn(session.session_id, fight_turn)
+    app.state.engagement_tracker.record_turn(
+        session_id=session.session_id,
+        turn_number=session.turn_number,
+        action_type="combat",
+        required_roll=False,
+        dice_result=fight_turn.outcome.result,
+        combat_action=True,
+        npc_interaction=False,
+        mana_spent=0,
+        items_used=len(req.items_used),
+    )
     await db.save_session(session)
 
-    # Check level up
-    level_up = {}
-    # XP was already applied via gain_xp, check if level changed
-    # (gain_xp handles level ups internally)
-
     return {
+        "turn_number": session.turn_number,
+        "current_beat": _current_beat_title(session),
+        "story_progress": _story_progress(session),
         "result": req.result,
         "narration": narration,
         "rewards": rewards,
+        "xp_gained": xp.gained,
+        "level_up": xp.level_ups,
         "choices": choices,
         "player_hp": session.player.hp,
         "player_mana": session.player.mana,
@@ -1461,6 +1390,7 @@ async def _reject_irrelevant_action(db: Database, session, campaign_objective: s
         choices=[],
         warning_count=warning_count,
         campaign_objective=campaign_objective,
+        story_progress=_story_progress(session),
         ui_context={"environment": "default", "tone": "tense"},
     )
 
@@ -1674,12 +1604,18 @@ def _build_combat_payload(session, combat: CombatState) -> dict:
             "max_hp": enemy.max_hp,
             "armor": enemy.armor,
             "attack_bonus": enemy.attack_bonus,
-            "abilities": enemy.abilities,
+            # Current effect names and an explicit target ("player" or "self") for every move.
+            "abilities": [normalize_enemy_ability(a) for a in enemy.abilities],
             "threat": combat.enemy_profile.get("threat", "standard"),
             "description": combat.enemy_profile.get("description", ""),
+            "archetype": combat.enemy_profile.get("archetype") or "soldier",
         },
+        # Story context for the fight screen's flavor text (frontend/src/utils/combatFlavor.js).
+        "genre": genre_of(session.world_state),
+        "scene": combat.scene,
         "player": {
             "name": player.name,
+            "character_class": player.character_class,
             "hp": player.hp,
             "max_hp": player.max_hp,
             "mana": player.mana,
@@ -1697,17 +1633,199 @@ def _build_combat_payload(session, combat: CombatState) -> dict:
     }
 
 
-async def _start_combat(session, narration: str) -> tuple[dict, str]:
+# ─── Turn pacing (see engines/pacing.py) ───
+
+# A rolled action moves the current story beat on with any of these outcomes.
+_BEAT_ADVANCING_OUTCOMES = ("success", "critical_success", "partial_success")
+
+_HOSTILE_WORDS = ("enemy", "hostile", "threat", "undead", "skeleton", "bandit", "guard", " patrol",
+                  "monster", "beast", "ambush", "attack", "dark figure", "creature", "demon", "corrupt")
+
+_COMBAT_REQUIRED = (
+    "COMBAT_REQUIRED: True. A combat encounter must begin NOW. "
+    "Naturally introduce ONE hostile enemy that fits this campaign's setting, the current location, and the story. "
+    "Give it a specific, descriptive name that belongs in this world (e.g., in a cyberpunk city: "
+    "'a corporate security drone'; in a haunted forest: 'a corrupted wolf'). Never use a creature that "
+    "does not fit the setting. Describe how it looks and how it threatens the player. "
+    "The combat will be resolved by the player."
+)
+
+
+def _engages_scene(intent: ActionIntent, classification: str) -> bool:
+    """The action is on the story's path (not a side action), so it can move a beat on."""
+    return (classification in ("relevant", "creative_valid")
+            and (intent.relevance or "relevant").strip().lower() == "relevant")
+
+
+def _update_combat_tension(session, intent: ActionIntent) -> bool:
+    """Build tension from risky actions and hostile scenes. True when it could start a fight."""
+    from engines.encounter_tuner import get_encounter_params
+
+    world = session.world_state
+    if world.get("combat"):
+        world["combat_tension"] = 0
+        return False
+    tension = world.get("combat_tension", 0) + 1
+    if intent.risk in ("high", "extreme") or intent.action_type in ("attack", "cast_spell", "intimidate"):
+        tension += 2
+    if any(word in (world.get("situation", "") or "").lower()[-200:] for word in _HOSTILE_WORDS):
+        tension += 1
+    world["combat_tension"] = tension
+    profile = world.get("player_profile")
+    threshold = get_encounter_params(PlayerProfile(**profile) if profile else None)["tension_threshold"]
+    logger.info(f"Combat tension: {tension}/{threshold}")
+    return tension >= threshold
+
+
+def _plan_turn(session, bp: CampaignBlueprint | None, moved_on: bool, tension_ready: bool) -> dict:
+    """Decide, before narrating, what this turn does to the story.
+
+    decision: continue | complete | force (story beats only)
+    fight:    None | "planned" (lead-in of a combat beat) | "surprise" (tension fight)
+    """
+    world = session.world_state
+    plan = {
+        "turn_after": session.turn_number + 1,
+        "turns_in_beat_after": world.get("turns_in_beat", 0) + 1,
+        "decision": pacing.CONTINUE,
+        "fight": None,
+        "final": False,
+        "progress": None,
+        "brief": None,  # what the storyteller is told about this turn (see engines/narrator.py)
+    }
+    in_combat = bool(world.get("combat"))
+    if bp is None or not bp.acts:
+        if tension_ready and not in_combat:
+            plan["fight"] = "surprise"
+        return plan
+
+    beat = pacing.current_beat(bp)
+    plan["progress"] = pacing.story_progress(bp)
+    plan["final"] = pacing.is_final_beat(bp)
+    if beat["type"] == "combat":
+        # A combat beat's story turn is the lead-in: the narration introduces the enemy.
+        if not in_combat:
+            plan["fight"] = "planned"
+    else:
+        window = pacing.beat_windows(bp)[pacing.current_index(bp)]
+        plan["decision"] = pacing.decide_story_beat(
+            beat, window, plan["turn_after"], plan["turns_in_beat_after"], moved_on
+        )
+        if (plan["decision"] == pacing.CONTINUE and tension_ready and not in_combat
+                and pacing.surprise_fight_allowed(bp, world, plan["turn_after"], plan["turns_in_beat_after"])):
+            plan["fight"] = "surprise"
+        logger.info(
+            f"Pacing: turn {plan['turn_after']}, beat '{beat.get('title')}' "
+            f"({plan['turns_in_beat_after']} turns, window {window}) → {plan['decision']}"
+            + (f", {plan['fight']} fight" if plan["fight"] else "")
+        )
+    moment = pacing.narration_moment(plan["decision"], plan["fight"], plan["final"])
+    plan["brief"] = {**plan["progress"], "moment": moment}
+    return plan
+
+
+def _story_progress(session) -> dict | None:
+    """Chapter / act / beat for the HUD (None for sessions without a campaign outline)."""
+    campaign = session.world_state.get("campaign")
+    return pacing.story_progress(campaign) if campaign else None
+
+
+def _fight_closes_beat(session) -> bool:
+    """Called after the fight's turn is counted. Planned fights always close their
+    beat on victory; a surprise fight closes its story beat only when the beat has
+    no turns left (so the campaign stays inside its budget)."""
+    world = session.world_state
+    campaign = world.get("campaign")
+    beat = pacing.current_beat(campaign) if campaign else None
+    if beat is None:
+        return False
+    if beat.get("type") == "combat":
+        return True
+    window = pacing.beat_windows(campaign)[pacing.current_index(campaign)]
+    decision = pacing.decide_story_beat(beat, window, session.turn_number, world.get("turns_in_beat", 0),
+                                        moved_on=False)
+    return decision != pacing.CONTINUE
+
+
+def _combat_context(plan: dict) -> str | None:
+    return _COMBAT_REQUIRED if plan.get("fight") else None
+
+
+async def _complete_beat(db: Database, session, ledger: progression.XpLedger | None = None) -> bool:
+    """Finish the current beat (and award its XP). Returns True if that ended the campaign."""
+    world = session.world_state
+    campaign = world.get("campaign")
+    if not campaign:
+        return False
+    (ledger or progression.XpLedger()).award(
+        session.player, progression.beat_xp(progression.act_number(campaign)), "beat"
+    )
+    if pacing.is_final_beat(campaign):
+        await _end_campaign(db, session, "victory")
+        return True
+    bp = app.state.campaign_planner.advance_beat(CampaignBlueprint(**campaign))
+    world["campaign"] = bp.model_dump()
+    world["current_act"], world["current_beat"] = bp.current_act, bp.current_beat
+    world["turns_in_beat"] = 0
+    return False
+
+
+async def _apply_turn_plan(db: Database, session, plan: dict, narration: str,
+                           ledger: progression.XpLedger) -> tuple[dict | None, str | None]:
+    """After narration: count the turn in its beat, finish the beat, or start the fight."""
+    world = session.world_state
+    world["turns_in_beat"] = plan["turns_in_beat_after"]
+    if plan["decision"] in (pacing.COMPLETE, pacing.FORCE):
+        await _complete_beat(db, session, ledger)
+        return None, None
+    if plan["fight"] and not world.get("campaign_ended") and not world.get("combat"):
+        surprise = plan["fight"] == "surprise"
+        if surprise and world.get("campaign"):
+            pacing.record_surprise_fight(world["campaign"], world)
+        return await _start_combat(session, narration, surprise=surprise)
+    return None, None
+
+
+def _current_beat_title(session) -> str | None:
+    campaign = session.world_state.get("campaign")
+    beat = pacing.current_beat(campaign) if campaign else None
+    return beat.get("title") if beat else None
+
+
+_SCENE_LIMIT = 400
+
+
+def _combat_scene(narration: str) -> str:
+    """The scene that set up a fight, for the combat screen: no choice lines, at most
+    400 characters, keeping the end (where the enemy appears) and starting on a sentence."""
+    text = re.sub(r"\s+", " ", strip_choice_lines(narration or "")).strip()
+    if len(text) <= _SCENE_LIMIT:
+        return text
+    tail = text[-_SCENE_LIMIT:]
+    match = re.search(r"[.!?]\s+(?=[A-Z\"'“])", tail)
+    return tail[match.end():] if match else tail.lstrip()
+
+
+async def _start_combat(session, narration: str, surprise: bool = False) -> tuple[dict, str]:
     """Design the enemy from the narration, record the encounter, and return (payload, source).
 
     The enemy's name comes from what the narrator described; its stats come from
-    an archetype/threat preset (see engines/enemy_designer.py).
+    an archetype/threat preset (see engines/enemy_designer.py). Its tier and threat
+    come from the story: tier rises with story progress, the final fight is the boss
+    (see engines/progression.py).
     """
+    campaign = session.world_state.get("campaign")
+    tier = threat = None
+    if campaign and pacing.ordered_beats(campaign):
+        tier = progression.story_tier(campaign, session.world_state.get("campaign_size"))
+        threat = progression.fight_threat(campaign, surprise=surprise)
     designed = await design_enemy(
         getattr(app.state, "enemy_designer", None),
         narration=narration,
         world_state=session.world_state,
         player_level=session.player.level,
+        tier=tier,
+        threat=threat,
     )
     combat_engine: CombatEngine = app.state.combat_engine
     combat = combat_engine.initiate_combat(
@@ -1722,6 +1840,7 @@ async def _start_combat(session, narration: str) -> tuple[dict, str]:
         "source": designed.source,
         "description": designed.description,
     }
+    combat.scene = _combat_scene(narration)
     enemy = combat.enemies[0]
     world = session.world_state
     world["combat"] = combat.model_dump()

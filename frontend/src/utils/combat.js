@@ -1,21 +1,35 @@
 // ═══════════════════════════════════════════════
 //  Combat — Pure combat resolution functions
 //  Ported from the original client-side engine
+//  Dice and status effects live in combatRules.js; enemy behavior in enemyAI.js.
 // ═══════════════════════════════════════════════
 
-export function rollD20() {
-  return Math.floor(Math.random() * 20) + 1;
-}
+import {
+  applyEffect,
+  getArmorModifier,
+  getDamageModifier,
+  getRollModifier,
+  getStatusIcon,
+  rollD20,
+  rollDice,
+} from './combatRules.js';
+import { planIntent, reactToPlayer } from './enemyAI.js';
 
-export function rollDice(str) {
-  if (!str) return 0;
-  const m = str.match(/(\d+)d(\d+)([+-]\d+)?/);
-  if (!m) return 0;
-  const count = parseInt(m[1]), sides = parseInt(m[2]), mod = parseInt(m[3] || 0);
-  let total = 0;
-  for (let i = 0; i < count; i++) total += Math.floor(Math.random() * sides) + 1;
-  return total + mod;
-}
+export {
+  applyEffect,
+  canAct,
+  getArmorModifier,
+  getDamageModifier,
+  getDodgeChance,
+  getRollModifier,
+  getStatusIcon,
+  hasEffect,
+  isImmune,
+  rollD20,
+  rollDice,
+  tickEffects,
+} from './combatRules.js';
+export { executeIntent, planIntent, reactToPlayer, resolveEnemyTurn } from './enemyAI.js';
 
 export function getWeaponDice(weaponName) {
   const w = weaponName.toLowerCase();
@@ -27,113 +41,6 @@ export function getWeaponDice(weaponName) {
   if (w.includes('staff') || w.includes('oak')) return '1d6+1';
   if (w.includes('lute')) return '1d4';
   return '1d6+1';
-}
-
-// ─── Status Effect Rules (mirrors backend registry) ───
-const STATUS_RULES = {
-  bleed:    { dot: [2, 4], skipTurn: false, damageModifier: 1.0, rollModifier: 0, armorModifier: 0, maxDuration: 3, dodgeChance: 0 },
-  stun:     { dot: [0, 0], skipTurn: true,  damageModifier: 1.0, rollModifier: 0, armorModifier: 0, maxDuration: 1, dodgeChance: 0 },
-  weaken:   { dot: [0, 0], skipTurn: false, damageModifier: 0.5, rollModifier: 0, armorModifier: 0, maxDuration: 2, dodgeChance: 0 },
-  focus:    { dot: [0, 0], skipTurn: false, damageModifier: 1.0, rollModifier: 5, armorModifier: 0, maxDuration: 1, dodgeChance: 0 },
-  poisoned: { dot: [1, 4], skipTurn: false, damageModifier: 1.0, rollModifier: 0, armorModifier: 0, maxDuration: 5, dodgeChance: 0 },
-  burning:  { dot: [1, 3], skipTurn: false, damageModifier: 1.0, rollModifier: 0, armorModifier: 0, maxDuration: 3, dodgeChance: 0 },
-  blocking: { dot: [0, 0], skipTurn: false, damageModifier: 1.0, rollModifier: 0, armorModifier: 3, maxDuration: 1, dodgeChance: 0 },
-  healing:  { dot: [-6, -2], skipTurn: false, damageModifier: 1.0, rollModifier: 0, armorModifier: 0, maxDuration: 3, dodgeChance: 0 },
-  dodging:  { dot: [0, 0], skipTurn: false, damageModifier: 1.0, rollModifier: 0, armorModifier: 0, maxDuration: 1, dodgeChance: 0.5 },
-  hidden:   { dot: [0, 0], skipTurn: false, damageModifier: 1.0, rollModifier: 3, armorModifier: 0, maxDuration: 2, dodgeChance: 0 },
-};
-
-function getRule(name) {
-  return STATUS_RULES[name.toLowerCase()] ||
-    { dot: [0, 0], skipTurn: false, damageModifier: 1.0, rollModifier: 0, armorModifier: 0, maxDuration: 5, dodgeChance: 0 };
-}
-
-export function getStatusIcon(name) {
-  const icons = {
-    bleed: '🩸', stun: '💫', weaken: '📉', focus: '🎯',
-    poisoned: '☠️', burning: '🔥', blocking: '🛡️', healing: '💚',
-    dodging: '💨', hidden: '👤',
-  };
-  return icons[name.toLowerCase()] || '✦';
-}
-
-export function getDamageModifier(combatant) {
-  let mod = 1.0;
-  for (const eff of (combatant.status_effects || [])) {
-    mod *= getRule(eff.name).damageModifier;
-  }
-  return mod;
-}
-
-export function getRollModifier(combatant) {
-  let mod = 0;
-  for (const eff of (combatant.status_effects || [])) {
-    mod += getRule(eff.name).rollModifier;
-  }
-  return mod;
-}
-
-export function getArmorModifier(combatant) {
-  let mod = 0;
-  for (const eff of (combatant.status_effects || [])) {
-    mod += getRule(eff.name).armorModifier;
-  }
-  return mod;
-}
-
-export function getDodgeChance(combatant) {
-  let chance = 0;
-  for (const eff of (combatant.status_effects || [])) {
-    chance = Math.max(chance, getRule(eff.name).dodgeChance);
-  }
-  return chance;
-}
-
-export function canAct(combatant) {
-  for (const eff of (combatant.status_effects || [])) {
-    if (getRule(eff.name).skipTurn) return false;
-  }
-  return true;
-}
-
-export function applyEffect(combatant, effectName, duration) {
-  const rule = getRule(effectName);
-  const capped = Math.min(duration, rule.maxDuration);
-  const existing = (combatant.status_effects || []).find(e => e.name.toLowerCase() === effectName.toLowerCase());
-  if (existing) {
-    existing.duration = Math.max(existing.duration, capped);
-  } else {
-    combatant.status_effects = [...(combatant.status_effects || []), { name: effectName, duration: capped }];
-  }
-}
-
-export function tickEffects(combatant, addLog) {
-  const expired = [];
-  for (const eff of combatant.status_effects) {
-    const rule = getRule(eff.name);
-    const [lo, hi] = rule.dot;
-    if (lo !== 0 || hi !== 0) {
-      const [min, max] = lo < hi ? [lo, hi] : [hi, lo];
-      const val = Math.floor(Math.random() * (max - min + 1)) + min;
-      if (val < 0) {
-        const heal = Math.abs(val);
-        combatant.hp = Math.min(combatant.max_hp, combatant.hp + heal);
-        addLog(`${getStatusIcon(eff.name)} ${eff.name} restores ${heal} HP on ${combatant.name || 'you'}!`, 'system');
-      } else if (val > 0) {
-        combatant.hp = Math.max(0, combatant.hp - val);
-        addLog(`${getStatusIcon(eff.name)} ${eff.name} deals ${val} damage to ${combatant.name || 'you'}!`, 'system');
-      }
-    }
-    eff.duration--;
-    if (eff.duration <= 0) {
-      expired.push(eff);
-      addLog(`${eff.name} fades from ${combatant.name || 'you'}.`, 'system');
-    }
-  }
-  for (const eff of expired) {
-    const idx = combatant.status_effects.indexOf(eff);
-    if (idx !== -1) combatant.status_effects.splice(idx, 1);
-  }
 }
 
 // Deep copy of a combat state. Turns are resolved on a copy and only committed to
@@ -155,16 +62,20 @@ export function buildResolvePayload(result, state) {
     player_mana: Math.max(0, Math.round(state.player.mana)),
     enemy_name: state.enemy.name,
     items_used: [...(state.items_used || [])],
-    combat_log: (state.logEntries || []).slice(-12).map(message => ({
-      actor: /\byou\b/i.test(message) ? 'player' : 'enemy',
-      message: message.replace(/^(?:⚔️|🧪|⚡|🏆|💀|💫|💨)+\s*/u, ''),
-    })),
+    // Story lines only (the small numbers shown next to them stay in the browser).
+    combat_log: (state.logEntries || []).slice(-12).map(entry => {
+      const message = typeof entry === 'string' ? entry : entry.text || '';
+      const actor = typeof entry === 'string' || !['player', 'enemy'].includes(entry.type)
+        ? (/\byou\b/i.test(message) ? 'player' : 'enemy')
+        : entry.type;
+      return { actor, message: message.replace(/^(?:⚔️|🧪|⚡|🏆|💀|💫|💨)+\s*/u, '') };
+    }),
     turns_taken: Math.max(1, state.turn || 1),
   };
 }
 
 export function createCombatState(combatData) {
-  return {
+  const state = {
     enemy: { ...combatData.enemy, status_effects: [] },
     player: {
       ...combatData.player,
@@ -177,13 +88,26 @@ export function createCombatState(combatData) {
     turn: 1,
     resolved: false,
     enemy_tier: combatData.enemy_tier || 1,
+    // Story context for flavor text (utils/combatFlavor.js).
+    genre: combatData.genre || 'fantasy',
+    scene: combatData.scene || '',
     // Sent back to the server, which checks the result against the stored encounter.
     combat_id: combatData.combat_id || '',
     items_used: [],
   };
+  // The enemy's first move, shown on its card from the start.
+  state.enemyIntent = planIntent(state);
+  return state;
 }
 
-export function resolvePlayerAttack(state, weaponName, dice) {
+// After every player action the enemy may change its planned move in response
+// (a soldier answering a buff, a boss entering phase 2...), so the card stays true.
+function withReaction(state, result) {
+  reactToPlayer(state);
+  return result;
+}
+
+function playerAttack(state, weaponName, dice) {
   const roll = rollD20();
   const atkBonus = state.player.attack_bonus;
   const rollMod = getRollModifier(state.player);
@@ -197,10 +121,10 @@ export function resolvePlayerAttack(state, weaponName, dice) {
   const diceInfo = { roll, target: threshold, success: hit, crit: isCrit || isMiss };
 
   if (isMiss) {
-    return { log: `You swing ${weaponName}... MISS! (rolled 1)`, type: 'player', flash: 'player', diceInfo };
+    return { log: `You swing ${weaponName}... MISS! (rolled 1)`, kind: 'miss', type: 'player', flash: 'player', diceInfo };
   }
   if (!hit) {
-    return { log: `Your ${weaponName} glances off their armor. (${roll}+${(atkBonus + rollMod).toFixed(1)} vs AC ${threshold})`, type: 'player', flash: 'player', diceInfo };
+    return { log: `Your ${weaponName} glances off their armor. (${roll}+${(atkBonus + rollMod).toFixed(1)} vs AC ${threshold})`, kind: 'glance', type: 'player', flash: 'player', diceInfo };
   }
 
   let dmg = rollDice(dice);
@@ -211,11 +135,16 @@ export function resolvePlayerAttack(state, weaponName, dice) {
   const critTxt = isCrit ? '⚡ CRITICAL! ' : '';
   return {
     log: `${critTxt}You strike with ${weaponName} for ${dmg} damage! (${roll}+${(atkBonus + rollMod).toFixed(1)})`,
+    kind: isCrit ? 'crit' : 'hit',
     type: isCrit ? 'crit' : 'player',
     damage: { target: 'enemy', amount: dmg, crit: isCrit },
     flash: 'enemy',
     diceInfo,
   };
+}
+
+export function resolvePlayerAttack(state, weaponName, dice) {
+  return withReaction(state, playerAttack(state, weaponName, dice));
 }
 
 // Who a support/defend ability's status effect lands on. Older payloads have no
@@ -225,7 +154,7 @@ function abilityTargetsEnemy(ability) {
   return ['weaken', 'stun'].includes((ability.status_effect || '').toLowerCase());
 }
 
-export function resolvePlayerSkill(state, ability) {
+function playerSkill(state, ability) {
   // The only place a skill's mana cost is paid.
   state.player.mana = Math.max(0, state.player.mana - ability.mana_cost);
 
@@ -234,18 +163,21 @@ export function resolvePlayerSkill(state, ability) {
     if (ability.name.toLowerCase() === 'heal') {
       const heal = Math.floor(Math.random() * 11) + 15;
       state.player.hp = Math.min(state.player.max_hp, state.player.hp + heal);
-      return { log: `You cast ${ability.name} and restore ${heal} HP!`, type: 'player', damage: { target: 'player', amount: heal, heal: true } };
+      return { log: `You cast ${ability.name} and restore ${heal} HP!`, kind: 'heal', type: 'player', damage: { target: 'player', amount: heal, heal: true } };
     }
     if (ability.status_effect) {
       const icon = getStatusIcon(ability.status_effect);
+      const effect = ability.status_effect;
       if (abilityTargetsEnemy(ability)) {
-        applyEffect(state.enemy, ability.status_effect, ability.status_duration || 2);
-        return { log: `${icon} You use ${ability.name}! ${state.enemy.name} is afflicted with ${ability.status_effect}.`, type: 'player', flash: 'enemy' };
+        if (!applyEffect(state.enemy, effect, ability.status_duration || 2)) {
+          return { log: `${state.enemy.name} is immune to ${effect}!`, kind: 'debuff', effect: null, immune: effect, type: 'player' };
+        }
+        return { log: `${icon} You use ${ability.name}! ${state.enemy.name} is afflicted with ${effect}.`, kind: 'debuff', effect, type: 'player', flash: 'enemy' };
       }
-      applyEffect(state.player, ability.status_effect, ability.status_duration || 2);
-      return { log: `${icon} You use ${ability.name}! Gained ${ability.status_effect}.`, type: 'player' };
+      applyEffect(state.player, effect, ability.status_duration || 2);
+      return { log: `${icon} You use ${ability.name}! Gained ${effect}.`, kind: 'buff', effect, type: 'player' };
     }
-    return { log: `You use ${ability.name}!`, type: 'player' };
+    return { log: `You use ${ability.name}!`, kind: 'buff', type: 'player' };
   }
 
   // Attack / Spell
@@ -258,8 +190,8 @@ export function resolvePlayerSkill(state, ability) {
   const isCrit = roll === 20;
   const isMiss = roll === 1;
 
-  if (isMiss) return { log: `${ability.name} misses! (rolled 1)`, type: 'player', flash: 'player', diceInfo: { roll: 1, target: threshold, success: false, crit: true } };
-  if (total < threshold && !isCrit) return { log: `${ability.name} glances off armor. (${roll}+${(atkBonus + rollMod).toFixed(1)} vs AC ${threshold})`, type: 'player', flash: 'player', diceInfo: { roll, target: threshold, success: false, crit: false } };
+  if (isMiss) return { log: `${ability.name} misses! (rolled 1)`, kind: 'miss', type: 'player', flash: 'player', diceInfo: { roll: 1, target: threshold, success: false, crit: true } };
+  if (total < threshold && !isCrit) return { log: `${ability.name} glances off armor. (${roll}+${(atkBonus + rollMod).toFixed(1)} vs AC ${threshold})`, kind: 'glance', type: 'player', flash: 'player', diceInfo: { roll, target: threshold, success: false, crit: false } };
 
   const dice = ability.damage_dice || '1d6';
   let dmg = rollDice(dice);
@@ -267,14 +199,21 @@ export function resolvePlayerSkill(state, ability) {
   if (isCrit) dmg = Math.floor(dmg * 1.5);
   state.enemy.hp -= dmg;
 
-  if (ability.status_effect) {
-    applyEffect(state.enemy, ability.status_effect, ability.status_duration || 2);
+  // Machines don't bleed and the dead can't be poisoned (combatRules.js).
+  let effect = ability.status_effect || null;
+  let immune = null;
+  if (effect && !applyEffect(state.enemy, effect, ability.status_duration || 2)) {
+    immune = effect;
+    effect = null;
   }
 
   const critTxt = isCrit ? '⚡ CRITICAL! ' : '';
-  const effectTxt = ability.status_effect ? ` ${getStatusIcon(ability.status_effect)} Applied ${ability.status_effect}!` : '';
+  const effectTxt = effect ? ` ${getStatusIcon(effect)} Applied ${effect}!` : immune ? ` It is immune to ${immune}.` : '';
   return {
     log: `${critTxt}${ability.name} deals ${dmg} damage!${effectTxt}`,
+    kind: isCrit ? 'crit' : 'hit',
+    effect,
+    immune,
     type: isCrit ? 'crit' : 'player',
     damage: { target: 'enemy', amount: dmg, crit: isCrit },
     flash: 'enemy',
@@ -282,16 +221,20 @@ export function resolvePlayerSkill(state, ability) {
   };
 }
 
+export function resolvePlayerSkill(state, ability) {
+  return withReaction(state, playerSkill(state, ability));
+}
+
 export function resolvePlayerItem(state, itemName, hpRestore, manaRestore) {
   const results = [];
   if (hpRestore > 0) {
     const heal = Math.max(hpRestore, Math.floor(hpRestore * (0.8 + Math.random() * 0.4)));
     state.player.hp = Math.min(state.player.max_hp, state.player.hp + heal);
-    results.push({ log: `You use ${itemName} and restore ${heal} HP!`, type: 'player', damage: { target: 'player', amount: heal, heal: true } });
+    results.push({ log: `You use ${itemName} and restore ${heal} HP!`, kind: 'item', type: 'player', damage: { target: 'player', amount: heal, heal: true } });
   }
   if (manaRestore > 0) {
     state.player.mana = Math.min(state.player.max_mana, state.player.mana + manaRestore);
-    results.push({ log: `You use ${itemName} and restore ${manaRestore} mana!`, type: 'player' });
+    results.push({ log: `You use ${itemName} and restore ${manaRestore} mana!`, kind: 'item', manaRestored: manaRestore, type: 'player' });
   }
   // Remove item, and record it so the server removes it from the saved inventory too
   const idx = state.inventory.findIndex(i => i.name === itemName && i.type === 'consumable');
@@ -299,92 +242,5 @@ export function resolvePlayerItem(state, itemName, hpRestore, manaRestore) {
     state.inventory.splice(idx, 1);
     state.items_used = [...(state.items_used || []), itemName];
   }
-  return results;
-}
-
-export function resolveEnemyTurn(state) {
-  // Phase 1: Is the enemy stunned? Checked before effects tick, otherwise a
-  // one-turn stun expires during the tick and never stops a single turn.
-  const stunned = !canAct(state.enemy);
-
-  // Phase 2: Tick effects on both (damage over time, durations)
-  tickEffects(state.enemy, () => {});
-  tickEffects(state.player, () => {});
-
-  if (state.enemy.hp <= 0) return { ended: true, victory: true };
-
-  if (stunned) {
-    state.turn++;
-    return { log: `💫 ${state.enemy.name} is stunned and cannot act!`, type: 'system', diceInfo: null };
-  }
-
-  const e = state.enemy;
-  const p = state.player;
-
-  let actionName = 'Attack';
-  let damageDice = '';
-  let statusEffect = null;
-  let statusDuration = 0;
-
-  if (e.abilities && e.abilities.length > 0) {
-    if (e.hp < e.max_hp * 0.5) {
-      const statusAbil = e.abilities.find(a => a.status_effect && !p.status_effects.some(se => se.name === a.status_effect));
-      if (statusAbil) {
-        actionName = statusAbil.name;
-        damageDice = statusAbil.damage_dice || '';
-        statusEffect = statusAbil.status_effect;
-        statusDuration = statusAbil.status_duration || 2;
-      } else {
-        const best = [...e.abilities].sort((a, b) => (rollDice(b.damage_dice) || 0) - (rollDice(a.damage_dice) || 0))[0];
-        actionName = best.name;
-        damageDice = best.damage_dice || '';
-        statusEffect = best.status_effect;
-        statusDuration = best.status_duration || 2;
-      }
-    } else if (Math.random() < 0.3) {
-      const abil = e.abilities[Math.floor(Math.random() * e.abilities.length)];
-      actionName = abil.name;
-      damageDice = abil.damage_dice || '';
-      statusEffect = abil.status_effect;
-      statusDuration = abil.status_duration || 2;
-    }
-  }
-
-  // Phase 3: Roll to hit
-  const roll = rollD20();
-  const rollMod = getRollModifier(e);
-  const total = roll + e.attack_bonus + rollMod;
-  const playerArmor = p.armor + getArmorModifier(p);
-  const threshold = 8 + playerArmor;
-  const isCrit = roll === 20;
-  const isMiss = roll === 1;
-
-  // Check dodge
-  const dodgeChance = getDodgeChance(p);
-  if (dodgeChance > 0 && Math.random() < dodgeChance) {
-    state.turn++;
-    return { log: `💨 You dodge ${e.name}'s ${actionName}!`, type: 'player', diceInfo: { roll, target: threshold, success: false, crit: false } };
-  }
-
-  if (isMiss) { state.turn++; return { log: `${e.name}'s ${actionName} misses!`, type: 'enemy', diceInfo: { roll: 1, target: threshold, success: false, crit: true } }; }
-  if (total < threshold && !isCrit) { state.turn++; return { log: `${e.name}'s ${actionName} glances off your armor.`, type: 'enemy', diceInfo: { roll, target: threshold, success: false, crit: false } }; }
-
-  // Phase 4: Calculate damage
-  let dmg = damageDice ? rollDice(damageDice) : Math.floor(Math.random() * 6) + 1 + Math.floor(e.attack_bonus);
-  dmg = Math.max(1, Math.floor(dmg * getDamageModifier(e)));
-  if (isCrit) dmg = Math.floor(dmg * 1.5);
-  p.hp -= dmg;
-
-  // Phase 5: Apply status effect
-  if (statusEffect) applyEffect(p, statusEffect, statusDuration);
-
-  const critTxt = isCrit ? '⚡ CRITICAL! ' : '';
-  state.turn++;
-  return {
-    log: `${critTxt}${e.name} uses ${actionName} for ${dmg} damage!`,
-    type: isCrit ? 'crit' : 'enemy',
-    damage: { target: 'player', amount: dmg, crit: isCrit },
-    flash: 'player',
-    diceInfo: { roll, target: threshold, success: true, crit: isCrit },
-  };
+  return withReaction(state, results);
 }

@@ -1,6 +1,9 @@
+import { describeProgress } from '../utils/storyProgress';
+
 export default function FloatingHUD({ data }) {
   if (!data) return null;
 
+  const progress = describeProgress(data.progress);
   const hpPct = Math.max(0, (data.hp / data.maxHp) * 100);
   const manaPct = Math.max(0, (data.mana / data.maxMana) * 100);
   const xpPct = data.xpToNext ? (data.xp / data.xpToNext) * 100 : 0;
@@ -57,6 +60,25 @@ export default function FloatingHUD({ data }) {
       <div className="hud-divider" />
 
       <div className="hud-section">
+        {progress && (
+          <div className="hud-progress">
+            <div className="hud-progress-label">
+              📖 {progress.label}{progress.act ? ` · ${progress.act}` : ''}
+              {progress.final && <span className="hud-progress-final"> · Finale</span>}
+            </div>
+            <div
+              className="hud-bar hud-progress-bar"
+              role="progressbar"
+              aria-label="Story progress"
+              aria-valuemin={0}
+              aria-valuemax={progress.total}
+              aria-valuenow={progress.chapter}
+              aria-valuetext={progress.label}
+            >
+              <div className="hud-bar-fill hud-progress-fill" style={{ width: `${progress.percent}%` }} />
+            </div>
+          </div>
+        )}
         <div className="hud-stats-title">📍 {data.beat || '—'}</div>
       </div>
 

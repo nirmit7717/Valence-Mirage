@@ -20,7 +20,7 @@ from engines.enemy_designer import (
     normalize_spec,
 )
 from engines.setting import FANTASY, POSTAPOC, SCIFI, detect_genre
-from helpers import act, create_session, get_session, make_intent
+from helpers import act, create_session, get_session, make_intent, move_to_first_beat_of_type
 
 CYBERPUNK_CAMPAIGN = {
     "title": "Neon Requiem",
@@ -262,7 +262,7 @@ def _cyberpunk_session(client, app_state):
     session_id, headers = create_session(client)
     world = get_session(session_id).world_state
     world["campaign"].update({k: v for k, v in CYBERPUNK_CAMPAIGN.items() if k not in ("acts", "current_act", "current_beat")})
-    world["combat_tension"] = 5
+    move_to_first_beat_of_type(session_id, "combat")  # the next action starts the planned fight
     app_state.narrator.text = DRONE_SCENE
     return session_id, headers
 

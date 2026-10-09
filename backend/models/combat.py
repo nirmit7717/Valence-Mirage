@@ -18,6 +18,7 @@ class StatusEffectType(str, Enum):
     STUN = "stun"
     WEAKEN = "weaken"
     FOCUS = "focus"
+    EMPOWERED = "empowered"
     # Existing legacy effects kept for backward compat
     POISONED = "poisoned"
     BURNING = "burning"
@@ -64,6 +65,15 @@ STATUS_EFFECT_RULES: dict[str, dict] = {
         "roll_modifier": 5,      # +5 to next d20 roll
         "armor_modifier": 0,
         "max_duration": 1,
+        "stacks": False,
+    },
+    StatusEffectType.EMPOWERED: {
+        "dot": (0, 0),
+        "skip_turn": False,
+        "damage_modifier": 1.5,  # rage / frenzy: hits half again as hard
+        "roll_modifier": 0,
+        "armor_modifier": 0,
+        "max_duration": 2,
         "stacks": False,
     },
     # ── Legacy effects (kept for existing abilities) ──
@@ -125,13 +135,43 @@ STATUS_EFFECT_RULES: dict[str, dict] = {
 }
 
 
+# Names used by older templates and saved fights. They used to match no rule and did nothing.
+STATUS_ALIASES = {
+    "bleeding": StatusEffectType.BLEED.value,
+    "stunned": StatusEffectType.STUN.value,
+    "weakened": StatusEffectType.WEAKEN.value,
+    "frightened": StatusEffectType.WEAKEN.value,
+    "blessed": StatusEffectType.EMPOWERED.value,
+}
+
+# Effects that help whoever has them; an enemy ability applying one targets itself.
+SELF_BUFFS = {"empowered", "focus", "blocking", "healing", "dodging", "hidden"}
+
+
+def canonical_status(name: str) -> str:
+    """Current registry name for an effect (old names map onto their replacement)."""
+    key = (name or "").strip().lower()
+    return STATUS_ALIASES.get(key, key)
+
+
 def get_effect_rule(name: str) -> dict:
     """Look up effect rule by name string. Returns default if unknown."""
     return STATUS_EFFECT_RULES.get(
-        name.lower(),
+        canonical_status(name),
         {"dot": (0, 0), "skip_turn": False, "damage_modifier": 1.0,
          "roll_modifier": 0, "armor_modifier": 0, "max_duration": 5, "stacks": False}
     )
+
+
+def normalize_enemy_ability(ability: dict) -> dict:
+    """An enemy ability with a current effect name and an explicit target ("player" or "self")."""
+    normalized = dict(ability)
+    effect = normalized.get("status_effect")
+    if effect:
+        normalized["status_effect"] = canonical_status(effect)
+    if normalized.get("target") not in ("player", "self"):
+        normalized["target"] = "self" if normalized.get("status_effect") in SELF_BUFFS else "player"
+    return normalized
 
 
 class StatusEffect(BaseModel):
@@ -197,6 +237,7 @@ class CombatState(BaseModel):
     loot_table: list[dict] = []
     enemy_profile: dict = {}  # archetype, threat, source, description
     start_mana: int = 0  # player mana when the fight began — bounds the mana the client may report
+    scene: str = ""  # the narration that set up the fight (choice lines removed, at most 400 chars)
     enemies: list[Combatant] = []
     player: Combatant | None = None
     turn_number: int = 0

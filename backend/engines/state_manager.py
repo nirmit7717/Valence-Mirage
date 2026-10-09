@@ -7,19 +7,10 @@ from copy import deepcopy
 from models.game_state import GameSession, PlayerState, Turn, Item
 from models.outcome import StateChanges
 from models.action import ActionIntent
+from engines.progression import ACTION_XP, XpLedger
 import config
 
 logger = logging.getLogger(__name__)
-
-# XP rewards by outcome
-XP_REWARDS = {
-    "critical_success": 30,
-    "success": 20,
-    "partial_success": 15,
-    "failure": 10,
-    "critical_failure": 5,
-    "narrative_choice": 5,
-}
 
 # Starting baseline
 def get_starter_items(char_class: str) -> list[Item]:
@@ -77,13 +68,14 @@ class StateManager:
         intent: ActionIntent,
         state_changes: StateChanges,
         outcome: str = "success",
-    ) -> dict:
+        ledger: XpLedger | None = None,
+    ) -> list[dict]:
         """Apply state changes after an action is resolved.
 
-        Returns dict with level_up info if applicable.
+        Every counted story turn earns ACTION_XP, whatever the dice said.
+        Returns the level-ups it caused (also recorded in ``ledger`` when given).
         """
         player = session.player
-        level_up_info = {}
 
         # --- HP changes ---
         player.hp = max(0, min(player.max_hp, player.hp + state_changes.hp_delta))
@@ -125,17 +117,11 @@ class StateManager:
             player.mana = min(player.max_mana, player.mana + 1)  # +1 mana per turn
             player.hp = min(player.max_hp, player.hp + 1)        # +1 HP per turn
 
-        # --- XP gain ---
-        xp_gain = XP_REWARDS.get(outcome, 10)
-        leveled = player.gain_xp(xp_gain)
-        if leveled:
-            level_up_info = {
-                "new_level": player.level,
-                "max_hp": player.max_hp,
-                "max_mana": player.max_mana,
-                "stat_increased": "a core attribute",
-            }
-            logger.info(f"LEVEL UP! {player.name} is now level {player.level}")
+        # --- XP gain (milestone leveling, engines/progression.py) ---
+        ledger = ledger if ledger is not None else XpLedger()
+        level_ups = ledger.award(player, ACTION_XP, "turn")
+        for level_up in level_ups:
+            logger.info(f"LEVEL UP! {player.name} is now level {level_up['level']}")
 
         # --- Action history ---
         player.action_history.append(intent.action_type)
@@ -149,7 +135,7 @@ class StateManager:
             f"Level={player.level}"
         )
 
-        return level_up_info
+        return level_ups
 
     def list_sessions(self) -> list[str]:
         return list(self._sessions.keys())

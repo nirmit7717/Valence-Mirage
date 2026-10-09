@@ -9,6 +9,9 @@ RULES:
 - Make the story coherent — later beats should reference earlier ones
 - Be creative with settings — do NOT default to taverns or medieval fantasy unless the keywords suggest it
 - Each act should escalate in tension and stakes
+- Name the campaign's central villain or threat in the premise. Earlier beats foreshadow it.
+- Fights escalate: early fights are against the threat's servants, a fight marked threat=elite is against its strongest lieutenant, and the final fight (threat=boss) is the confrontation with the central villain itself
+- The final beat must resolve the story — it is the climax, not a setup for further adventures
 
 OUTPUT: JSON with this exact structure:
 {

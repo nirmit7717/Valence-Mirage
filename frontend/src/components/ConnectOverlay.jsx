@@ -4,9 +4,9 @@ import { keywordsToText } from '../utils/keywords';
 import KeywordInput from './KeywordInput';
 
 const SIZES = [
-  { value: 'small', emoji: '⚡', label: 'Short', desc: '12-15 turns' },
-  { value: 'medium', emoji: '🗺️', label: 'Standard', desc: '20-25 turns' },
-  { value: 'large', emoji: '📖', label: 'Grand Saga', desc: '30-35 turns' },
+  { value: 'small', emoji: '⚡', label: 'Short', desc: '8-10 turns · 3 fights' },
+  { value: 'medium', emoji: '🗺️', label: 'Standard', desc: '13-15 turns · 5 fights' },
+  { value: 'large', emoji: '📖', label: 'Grand Saga', desc: '20-25 turns · 7 fights' },
 ];
 
 export default function ConnectOverlay({ onStart, onCancel }) {

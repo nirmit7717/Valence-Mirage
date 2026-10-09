@@ -3,21 +3,23 @@
 An enemy's name comes from the campaign (what the narrator described); its
 numbers come from a preset chosen by *how* it was described: its archetype
 (brute, construct, caster...) and threat level (minion, standard, elite, boss),
-scaled by tier (player level). Baselines are calibrated against the
-hand-built templates in data/enemies.py.
+scaled by tier (how far the story has come, see engines/progression.py).
+Baselines are calibrated against the hand-built templates in data/enemies.py.
 """
 
+from engines.progression import fight_xp
 from models.combat import EnemyTemplate
 
 ARCHETYPES = ("brute", "soldier", "skirmisher", "beast", "caster", "construct", "undead", "horror")
 THREATS = ("minion", "standard", "elite", "boss")
 
+# XP isn't here: every enemy is worth progression.fight_xp(tier, threat).
 TIER_BASE = {
-    1: {"hp": 16, "armor": 1, "attack_bonus": 1.5, "xp": 20},
-    2: {"hp": 24, "armor": 2, "attack_bonus": 2.5, "xp": 40},
-    3: {"hp": 38, "armor": 3, "attack_bonus": 3.0, "xp": 70},
-    4: {"hp": 55, "armor": 5, "attack_bonus": 4.5, "xp": 125},
-    5: {"hp": 85, "armor": 6, "attack_bonus": 6.5, "xp": 250},
+    1: {"hp": 16, "armor": 1, "attack_bonus": 1.5},
+    2: {"hp": 24, "armor": 2, "attack_bonus": 2.5},
+    3: {"hp": 38, "armor": 3, "attack_bonus": 3.0},
+    4: {"hp": 55, "armor": 5, "attack_bonus": 4.5},
+    5: {"hp": 85, "armor": 6, "attack_bonus": 6.5},
 }
 
 # Damage ladder; tiers start at a step and archetypes/moves shift along it.
@@ -86,10 +88,10 @@ ARCHETYPE_PRESETS: dict[str, dict] = {
 }
 
 THREAT_MODIFIERS = {
-    "minion": {"hp": 0.7, "armor": -1, "attack": -0.5, "xp": 0.6},
-    "standard": {"hp": 1.0, "armor": 0, "attack": 0.0, "xp": 1.0},
-    "elite": {"hp": 1.35, "armor": 1, "attack": 0.5, "xp": 1.5},
-    "boss": {"hp": 1.8, "armor": 2, "attack": 1.0, "xp": 2.2},
+    "minion": {"hp": 0.7, "armor": -1, "attack": -0.5},
+    "standard": {"hp": 1.0, "armor": 0, "attack": 0.0},
+    "elite": {"hp": 1.35, "armor": 1, "attack": 0.5},
+    "boss": {"hp": 1.8, "armor": 2, "attack": 1.0},
 }
 
 # Loot names per genre: (healing, mana restore, armor drop).
@@ -173,5 +175,5 @@ def build_enemy_template(
         damage_dice=_damage(step),
         abilities=abilities,
         loot_table=build_loot_table(tier, threat, genre),
-        xp_reward=max(5, round(base["xp"] * mod["xp"])),
+        xp_reward=fight_xp(tier, threat),
     )

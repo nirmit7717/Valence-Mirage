@@ -2,7 +2,7 @@
 
 import pytest
 
-from helpers import act, create_session, get_session, make_intent
+from helpers import act, create_session, get_session, make_intent, move_to_first_beat_of_type
 
 GOBLIN_NARRATION = "A goblin scavenger lunges from the shadows, blade raised.\n→ Fight\n→ Dodge\n→ Shout"
 NO_ENEMY_NARRATION = "The wind howls.\n→ Wait\n→ Listen\n→ Move on"
@@ -10,7 +10,12 @@ CRYPT_ENEMIES = {"Skeleton Soldier", "Undead Archer"}
 
 
 def _prime_tension(session_id: str, *, location: str | None = None):
-    """Put combat tension one point below the default threshold (6)."""
+    """Put combat tension one point below the default threshold (6).
+
+    Surprise fights only fit where the turn budget has room: the session must be on
+    a story beat that isn't followed by a planned fight, outside the final act. In a
+    Grand Saga that's the opening beat, so tension tests use campaign_size="large".
+    """
     world = get_session(session_id).world_state
     world["combat_tension"] = 5
     if location:
@@ -18,10 +23,8 @@ def _prime_tension(session_id: str, *, location: str | None = None):
 
 
 def _set_combat_beat(session_id: str):
-    """Move the fallback blueprint to act 2, beat 1 ("Ambush on the Road", type combat)."""
-    campaign = get_session(session_id).world_state["campaign"]
-    campaign["current_act"] = 2
-    campaign["current_beat"] = 1
+    """Move the campaign to its first planned fight."""
+    move_to_first_beat_of_type(session_id, "combat")
 
 
 def _assert_combat_started(body: dict, session_id: str, expected_names: set[str]):
@@ -54,8 +57,12 @@ def _assert_combat_started(body: dict, session_id: str, expected_names: set[str]
 )
 def test_tension_threshold_starts_combat(client, app_state, fixed_roll, requires_roll, narration, location, expected):
     fixed_roll(5)
-    app_state.intent_parser.next_intent = make_intent(requires_roll=requires_roll, description="inspect stonework")
-    session_id, headers = create_session(client)
+    # A side action (tangential) doesn't move the beat on, even when its roll succeeds,
+    # so the beat stays open for the fight.
+    app_state.intent_parser.next_intent = make_intent(
+        requires_roll=requires_roll, description="inspect stonework", relevance="tangential"
+    )
+    session_id, headers = create_session(client, campaign_size="large")
     _prime_tension(session_id, location=location)
     app_state.narrator.text = narration
 
@@ -91,7 +98,7 @@ def test_combat_beat_starts_combat(client, app_state, fixed_roll, narration, loc
 def test_next_action_during_combat_returns_active_combat(client, app_state):
     app_state.intent_parser.next_intent = make_intent(description="inspect stonework")
     session_id, headers = create_session(client)
-    _prime_tension(session_id)
+    _set_combat_beat(session_id)
     app_state.narrator.text = GOBLIN_NARRATION
 
     started = act(client, session_id, headers).json()

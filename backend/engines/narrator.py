@@ -5,9 +5,21 @@ from pathlib import Path
 
 from openai import AsyncOpenAI
 
+import re
+
 from models.action import ActionIntent
 from models.game_state import PlayerState
 from engines.campaign_planner import CampaignPlanner, CampaignBlueprint
+from engines.pacing import (
+    AFTER_FIGHT,
+    DEVELOP,
+    FIGHT_LEAD_IN,
+    FINAL_FIGHT_LEAD_IN,
+    RESOLVE,
+    STORY_ENDS,
+    SURPRISE_FIGHT,
+    WRAP_UP,
+)
 from rag import RuleRetriever
 import config
 from engines.llm_utils import extract_message_text
@@ -16,6 +28,76 @@ from tenacity import retry, stop_after_attempt, wait_exponential
 logger = logging.getLogger(__name__)
 
 PROMPT_PATH = Path(__file__).parent.parent / "prompts" / "narrator.txt"
+EPILOGUE_PROMPT_PATH = Path(__file__).parent.parent / "prompts" / "epilogue.txt"
+
+
+# ─── Story pacing (see engines/pacing.py) ───
+
+# One instruction per kind of turn. The storyteller follows it so the story
+# resolves when the turn budget says it should, not whenever the model feels like it.
+PACING_DIRECTIVES = {
+    DEVELOP: (
+        "Develop the current beat: deepen it with a clue, a complication or a character moment. "
+        "Do not resolve it yet."
+    ),
+    RESOLVE: (
+        "The current beat resolves on this turn. Bring it to a satisfying close, "
+        "then point the story toward the next beat."
+    ),
+    WRAP_UP: (
+        "Time is short. Resolve the current beat NOW, even if it costs the player something "
+        "or leaves a complication behind, then point the story toward the next beat."
+    ),
+    FIGHT_LEAD_IN: (
+        "This chapter is a fight. Introduce the enemy now and end on the moment the battle begins."
+    ),
+    FINAL_FIGHT_LEAD_IN: (
+        "FINAL CONFRONTATION. The campaign's central threat appears in person now. Make it feel like "
+        "the climax of everything so far, and end on the moment the last battle begins."
+    ),
+    SURPRISE_FIGHT: (
+        "Danger interrupts the current beat: an enemy appears before the beat can resolve."
+    ),
+    STORY_ENDS: (
+        "THE STORY ENDS NOW. Resolve this action, then bring the campaign's central conflict to its "
+        "conclusion and describe how the world is changed. Do not suggest any further actions."
+    ),
+    AFTER_FIGHT: (
+        "The fight is over. Show its aftermath briefly, then point the story toward the next beat."
+    ),
+}
+
+
+def pacing_section(brief: dict | None) -> str:
+    """The STORY PACING block: where the player is in the story and what this turn must do.
+
+    ``brief`` is ``pacing.story_progress(...)`` plus a ``moment`` key.
+    """
+    if not brief:
+        return ""
+    directive = PACING_DIRECTIVES.get(brief.get("moment"), PACING_DIRECTIVES[DEVELOP])
+    lines = ["STORY PACING:"]
+    act_title = brief.get("act_title")
+    lines.append(
+        f"- Chapter {brief.get('chapter')} of {brief.get('total')}"
+        + (f" · Act {brief.get('act_id')}: {act_title}" if act_title else "")
+    )
+    lines.append(f"- Current beat: {brief.get('beat_title', '')} ({brief.get('beat_type', '')})")
+    if brief.get("final"):
+        lines.append("- This is the final chapter of the campaign.")
+    elif brief.get("next_beat_title"):
+        kind = "a fight" if brief.get("next_beat_type") == "combat" else brief.get("next_beat_type", "")
+        lines.append(f"- Next beat: {brief['next_beat_title']} ({kind})")
+    lines.append(f"- This turn: {directive}")
+    return "\n".join(lines)
+
+
+_CHOICE_LINE = re.compile(r"^\s*(?:→|->).*$", re.MULTILINE)
+
+
+def strip_choice_lines(text: str) -> str:
+    """Remove "→ action" suggestion lines (an ending offers no further actions)."""
+    return re.sub(r"\n{3,}", "\n\n", _CHOICE_LINE.sub("", text or "")).strip()
 
 
 class Narrator:
@@ -29,6 +111,7 @@ class Narrator:
             max_retries=1,      # Reduce from default 2 retries
         )
         self.prompt = PROMPT_PATH.read_text()
+        self.epilogue_prompt = EPILOGUE_PROMPT_PATH.read_text()
         combat_prompt_path = Path(__file__).parent.parent / "prompts" / "combat_narrator.txt"
         self.combat_prompt = combat_prompt_path.read_text()
         self.rule_retriever = RuleRetriever()
@@ -55,6 +138,7 @@ class Narrator:
         turn_history: list | None = None,
         combat_context: str | None = None,
         narration_params: dict | None = None,
+        pacing: dict | None = None,
     ) -> str:
         # Fetch relevant rules for grounding
         relevant_rules = await self.rule_retriever.get_relevant_rules(
@@ -132,6 +216,9 @@ class Narrator:
             user_msg += f"Campaign: {campaign_title} — {campaign_premise[:150]}\n"
         if beat_ctx:
             user_msg += f"Current Beat: {beat_ctx}\n"
+        story_pacing = pacing_section(pacing)
+        if story_pacing:
+            user_msg += f"\n{story_pacing}\n\n"
         if npc_ctx:
             user_msg += f"NPCs Present: {npc_ctx}\n"
         if npc_dialogue:
@@ -168,6 +255,63 @@ class Narrator:
             logger.error(f"Narration API error: {e}")
             return f"Your {intent.action_type} results in {outcome_result}. The world shifts around you."
 
+
+    async def narrate_epilogue(
+        self,
+        player: PlayerState,
+        world_state: dict,
+        final_enemy: str,
+        fight_summary: str = "",
+        turn_history: list | None = None,
+        narration_params: dict | None = None,
+    ) -> str:
+        """The campaign's ending, written after the final fight is won. Never offers choices."""
+        campaign = world_state.get("campaign", {}) or {}
+        title = campaign.get("title", "") or "the journey"
+        history_ctx = ""
+        for t in (turn_history or [])[-4:]:
+            player_in = t.player_input if hasattr(t, "player_input") else t.get("player_input", "")
+            narr = t.outcome.narration if hasattr(t, "outcome") else t.get("outcome", {}).get("narration", "")
+            history_ctx += f"- {player_in[:80]} → {strip_choice_lines(narr)[:120]}\n"
+
+        user_msg = (
+            f"Campaign: {title} — {campaign.get('premise', '')[:200]}\n"
+            f"Setting: {campaign.get('setting', '')[:150]}\n"
+            f"Tone: {campaign.get('tone', '') or 'dark fantasy'}\n"
+            f"Objective: {world_state.get('campaign_objective', '')}\n"
+            f"Hero: {player.name}, a level {player.level} {player.character_class}\n"
+            f"Final battle: {player.name} has just defeated {final_enemy}"
+            + (f" ({fight_summary})" if fight_summary else "")
+            + "\n"
+            f"Location: {world_state.get('location', 'unknown')}\n"
+            f"Last scene: {strip_choice_lines(world_state.get('situation', ''))[-400:]}\n"
+        )
+        if history_ctx:
+            user_msg += f"\nThe journey so far (most recent last):\n{history_ctx}"
+        user_msg += "\nWrite the ending of this campaign now."
+
+        fallback = (
+            f"{final_enemy} falls, and with it the shadow that hung over {title} lifts at last. "
+            f"{player.name} stands in the quiet that follows. The story will be told for a long time."
+        )
+        try:
+            response = await self.client.chat.completions.create(
+                model=config.NARRATOR_MODEL,
+                messages=[
+                    {"role": "system", "content": self.epilogue_prompt},
+                    {"role": "user", "content": user_msg},
+                ],
+                temperature=narration_params.get("temperature", 0.85) if narration_params else 0.85,
+                max_tokens=600,
+            )
+            content = strip_choice_lines(extract_message_text(response) or "")
+            if not content:
+                logger.warning("Narrator: empty epilogue returned from model")
+                return fallback
+            return content
+        except Exception as e:
+            logger.error(f"Epilogue narration failed: {e}")
+            return fallback
 
     async def narrate_opening(self, title: str, premise: str, setting: str, player_name: str, tone: str = "", character_class: str = "") -> str:
         """Generate rich opening narration for a new campaign."""

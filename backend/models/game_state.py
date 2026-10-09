@@ -47,33 +47,11 @@ class PlayerState(BaseModel):
     status_effects: list[str] = []
     action_history: list[str] = []
 
-    def gain_xp(self, amount: int) -> bool:
-        """Add XP and level up if threshold met. Returns True if leveled up."""
-        self.xp += amount
-        leveled = False
-        while self.xp >= self.xp_to_next:
-            self.xp -= self.xp_to_next
-            self.level += 1
-            self.xp_to_next = int(self.xp_to_next * 1.5)
-            # Stat increase on level up
-            self.max_hp += 10
-            self.max_mana += 10
-            self.hp = self.max_hp
-            self.mana = self.max_mana
-            
-            # Universal +1 to all stats
-            primary_stat = {
-                "warrior": "strength", "rogue": "dexterity",
-                "wizard": "intelligence", "cleric": "wisdom",
-                "bard": "charisma"
-            }.get(self.character_class.lower(), "strength")
-            
-            for s in ["strength", "intelligence", "dexterity", "control", "charisma", "wisdom"]:
-                bonus = 2 if s == primary_stat else 1
-                setattr(self.stats, s, getattr(self.stats, s) + bonus)
-                
-            leveled = True
-        return leveled
+    def gain_xp(self, amount: int, reason: str = "") -> bool:
+        """Add XP using the milestone rules (engines/progression.py). True if it leveled up."""
+        from engines.progression import award  # imported here: engines imports this module
+
+        return bool(award(self, amount, reason))
 
 
 class Turn(BaseModel):

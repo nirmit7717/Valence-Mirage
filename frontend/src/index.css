@@ -139,6 +139,19 @@ body.game-active { overflow: hidden; }
   font-family: monospace;
 }
 
+/* Story progress: "Chapter X of Y · Act N · Title" */
+.hud-progress { margin-bottom: 8px; }
+.hud-progress-label {
+  color: #999;
+  font-size: 9px;
+  text-align: center;
+  margin-bottom: 4px;
+  line-height: 1.4;
+}
+.hud-progress-final { color: #d4a24c; font-weight: 600; }
+.hud-progress-bar { flex: none; width: 100%; background: rgba(201, 168, 76, 0.1); }
+.hud-progress-fill { background: linear-gradient(90deg, #4a3f7a, #9a7ad4); }
+
 .hud-stats-title {
   color: #c9a84c;
   font-size: 9px;
@@ -376,6 +389,52 @@ body.game-active { overflow: hidden; }
 .dice-badge.crit-failure { background: rgba(74,26,26,0.6); color: #f44; font-weight: bold; }
 .dice-badge.choice { background: rgba(42,42,58,0.6); color: #99f; }
 .beat-tag { display: inline-block; background: rgba(42,26,58,0.6); color: #c8a; padding: 2px 8px; border-radius: 4px; font-size: 11px; margin-left: 4px; }
+.dice-badge.xp-badge { background: rgba(58,48,20,0.6); color: #e6c56a; }
+
+/* ─── Level-up banner ─── */
+.level-up-region {
+  position: fixed;
+  top: 56px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 60;
+  pointer-events: none;
+}
+.level-up-banner {
+  pointer-events: auto;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  justify-content: center;
+  max-width: min(92vw, 560px);
+  padding: 10px 14px;
+  border: 1px solid rgba(201, 168, 76, 0.6);
+  border-radius: 8px;
+  background: rgba(24, 18, 8, 0.92);
+  box-shadow: 0 0 18px rgba(201, 168, 76, 0.25);
+  color: #f1dc9a;
+  font-size: 13px;
+  animation: level-up-in 0.35s ease-out;
+}
+.level-up-title { font-weight: 700; letter-spacing: 0.5px; }
+.level-up-gains { color: #d8c28a; font-size: 12px; }
+.level-up-close {
+  background: none;
+  border: none;
+  color: #d8c28a;
+  cursor: pointer;
+  font-size: 13px;
+  padding: 2px 4px;
+}
+.level-up-close:focus-visible { outline: 2px solid #c9a84c; outline-offset: 2px; }
+@keyframes level-up-in {
+  from { opacity: 0; transform: translateY(-8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .level-up-banner { animation: none; }
+}
 
 /* NPC */
 .npc-dialogue-box {
@@ -521,6 +580,8 @@ body.game-active { overflow: hidden; }
 .combat-log-entry.enemy-log { color: #c88; }
 .combat-log-entry.system-log { color: #88c; font-style: italic; }
 .combat-log-entry.crit-log { color: #ff4; font-weight: bold; }
+.combat-log-entry.scene-log { color: #a9a39a; font-style: italic; line-height: 1.45; border-left: 2px solid rgba(201,168,76,0.35); padding-left: 8px; }
+.combat-log-detail { color: #8a8a99; font-size: 0.85em; font-weight: normal; font-family: monospace; }
 @keyframes logSlide { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
 
 .combat-controls {
@@ -551,6 +612,9 @@ body.game-active { overflow: hidden; }
 .threat-badge.threat-elite { color: #fb5; }
 .threat-badge.threat-boss { color: #f55; text-shadow: 0 0 6px rgba(255, 60, 60, 0.6); }
 .enemy-desc { color: #a88; font-size: 11px; font-style: italic; margin-bottom: 4px; max-width: 320px; }
+/* The enemy's planned move ("Next: Crushing Blow ⚠") */
+.enemy-intent { margin-top: 4px; font-size: 11px; color: #bbb; letter-spacing: 0.3px; }
+.enemy-intent.enemy-intent-warn { color: #ffb347; font-weight: bold; text-shadow: 0 0 6px rgba(255, 140, 0, 0.45); }
 .combat-btn.btn-back { background: linear-gradient(to bottom, #222, #111); border-color: #555; color: #aaa; font-size: 12px; padding: 8px; }
 .combat-btn.btn-back:hover { border-color: #888; color: #ddd; box-shadow: none; }
 .combat-btn.btn-skill { background: linear-gradient(to bottom, #230, #120); border-color: #680; color: #fc8; }

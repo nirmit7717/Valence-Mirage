@@ -47,8 +47,11 @@ backend/
 ├── database.py                # SQLite persistence (aiosqlite) + user tables
 ├── engines/
 │   ├── campaign_planner.py    # Template-driven campaign generation
+│   ├── pacing.py              # Turn budgets: when beats finish and fights happen
+│   ├── progression.py         # Milestone XP, level-ups, story-scaled enemy tier/threat
+│   ├── enemy_designer.py      # Names enemies from the scene, stats from archetype presets
 │   ├── intent_parser.py       # Action classification (8B)
-│   ├── narrator.py            # Story narration (70B) + combat narration
+│   ├── narrator.py            # Story narration (70B) + pacing directives + epilogue
 │   ├── combat_engine.py       # Turn-based combat resolution
 │   ├── npc_engine.py          # Dynamic NPC generation + dialogue
 │   ├── engagement_tracker.py  # Per-turn signal + EMA profile update
@@ -76,7 +79,8 @@ backend/
 ├── prompts/
 │   ├── campaign_plan.txt      # Campaign generation prompt
 │   ├── intent_parse.txt       # Action classification prompt
-│   ├── narrator.txt           # Exploration narration prompt
+│   ├── narrator.txt           # Exploration narration prompt (incl. STORY PACING rules)
+│   ├── epilogue.txt           # The campaign's ending after the final fight
 │   └── combat_narrator.txt    # Combat narration prompt
 └── static/
     └── index.html             # Built React UI (Vite output)
@@ -105,6 +109,8 @@ frontend/
 │   │   ├── InputArea.jsx       # Action input
 │   │   ├── NarrativeCard.jsx   # Modal narration + typewriter + chunking
 │   │   ├── CombatOverlay.jsx   # Full combat engine + cinematics
+│   │   ├── FloatingHUD.jsx     # Stats + "Chapter X of Y" story progress
+│   │   ├── LevelUpBanner.jsx   # Announces level-ups (role="status")
 │   │   ├── LoadingOverlay.jsx  # Fullscreen loading spinner
 │   │   ├── Navbar.jsx          # Persistent top navigation
 │   │   ├── SettingsPanel.jsx   # TTS/animation/speed controls
@@ -113,7 +119,12 @@ frontend/
 │       ├── tts.js              # Browser SpeechSynthesis
 │       ├── typewriter.js        # Character-by-character reveal
 │       ├── chunker.js           # Smart narration splitting
-│       ├── combat.js            # Pure combat resolution
+│       ├── combat.js            # Pure combat resolution (player actions, payloads)
+│       ├── combatRules.js       # Dice + status effect registry (mirrors the backend)
+│       ├── enemyAI.js           # Enemy behavior by type: planned moves + reactions
+│       ├── combatFlavor.js      # Story lines for the fight log, taunts, icons
+│       ├── storyProgress.js     # Chapter / act labels for the HUD
+│       ├── progression.js       # XP badge + level-up summaries
 │       └── theme.js             # Dynamic theming + ambience
 ```
 
@@ -309,6 +320,20 @@ POST /session/{id}/combat/resolve
 
 XP and loot always come from the stored encounter, and each fight can be resolved once (a repeat gets `409`). Resolution is serialized with an in-process lock per session, so run a single server worker.
 
+A fight counts as one campaign turn. Besides HP, mana, rewards and narration, the response carries `turn_number`, `current_beat`, `story_progress`, `xp_gained` (fight XP, plus the beat's XP when the fight finishes it) and `level_up`. Winning the final fight returns the campaign's epilogue as `narration`, `choices: []` and `pending_outcome: {"type": "victory"}`.
+
+### Story, XP and Combat Fields
+
+| Where | Field | Meaning |
+|-------|-------|---------|
+| `/session/new`, `/action`, `/combat/resolve`, `/hydrate` | `story_progress` | `{chapter, total, act_id, act_title, beat_title, beat_type, threat_hint, final, next_beat_title, next_beat_type}` (`null` without an outline) |
+| `/action`, `/combat/resolve` | `xp_gained` | All XP the turn earned |
+| `/action`, `/combat/resolve` | `level_up` | One entry per level gained: `{level, reason, hp_gain, mana_gain, stats, max_hp, max_mana}` |
+| combat payload (`combat_data`) | `genre`, `scene` | The campaign's setting (`fantasy` / `scifi` / `postapoc`) and the narration that set up the fight (no choice lines, ≤ 400 characters) |
+| combat payload | `enemy.archetype`, `enemy.threat` | How the enemy fights (brute, soldier, …) and how dangerous it is (standard, elite, boss) |
+| combat payload | `enemy.abilities[].target` | `"player"` or `"self"` (rage and other self-buffs) |
+| combat payload | `player.character_class` | For the class icon on the fight screen |
+
 ### Example: Create Session
 
 ```json
@@ -339,13 +364,47 @@ Each class has 4 abilities using a unified status effect system. Abilities inter
 
 ## Campaign Templates
 
-| Size | Beats | Est. Turns | Session Time | Best For |
-|------|-------|-----------|-------------|---------|
-| ⚡ Small | 6 | 12–15 | ~15 min | Quick adventures |
-| 🗺️ Medium | 10 | 20–25 | ~30 min | Standard quest |
-| 📖 Large | 16 | 30–35 | ~45 min | Epic saga |
+| Size | Acts | Beats | Fights | Turns | Best For |
+|------|------|-------|--------|-------|---------|
+| ⚡ Short | 2 | 5 | 3 | 8–10 | Quick adventures |
+| 🗺️ Standard | 3 | 8 | 5 | 13–15 | Standard quest |
+| 📖 Grand Saga | 4 | 13 | 7 | 20–25 | Epic saga |
 
-Templates enforce narrative pacing (combat, social, exploration, choice beats) while the AI fills in creative content. Soft enforcement with escalation — if you avoid combat too long, the story pushes you into it.
+The AI writes the story, but the structure always comes from the template: if the model returns too few, too many or mistyped beats, the outline is conformed to the template (keeping the model's titles and descriptions where the beat types match). Fights escalate, the second-to-last fight is against an elite lieutenant, and the last fight is always the climax against the campaign's central threat.
+
+Every beat has a turn budget (story beats 1–2 turns, a fight beat exactly 2: the turn the enemy appears plus the fight), and the beat budgets add up to the size's turn range.
+
+### Pacing
+
+`engines/pacing.py` keeps every campaign inside its turn range:
+
+- A story beat finishes when an action moves it on (a successful or narrative action that engages with the scene). It can't finish before it has had its minimum turns or before its *window* opens (the sum of the earlier beats' minimums).
+- A beat that runs out of turns is wrapped up on that turn, even if the player was wandering.
+- A fight beat is a lead-in turn (the narrator introduces the enemy) followed by the fight itself. Winning the fight finishes the beat; winning the final fight ends the campaign in victory.
+- Combat tension can start a surprise fight only where the budget has room: never on a fight beat, never on the beat right before a planned fight, never in the final act, and at most once per act. In practice that means surprise fights are rare and only happen early in a Grand Saga.
+- Sessions saved before turn budgets existed play on with their old outline; beats without budgets count as 1–2 turns (2 for fights).
+
+The narrator gets a **STORY PACING** section on every turn: chapter N of M, the act, the current and next beat, and one instruction for this turn (develop the beat, resolve it, wrap it up now, introduce the enemy, or the final confrontation with the central threat). Winning the final fight produces an epilogue (`prompts/epilogue.txt`) with no further choices. The HUD shows "Chapter X of Y · Act N" with a progress bar.
+
+---
+
+## Leveling
+
+XP comes from playing the story, not from dice luck (`engines/progression.py`):
+
+| Source | XP |
+|--------|----|
+| Every story turn (any roll result) | 5 |
+| Finishing a beat | 20, +5 for each act after the first |
+| Winning a fight | tier base (25 / 35 / 45 / 60 / 80 for tiers 1–5) × threat (minion 0.5, standard 1, elite 1.5, boss 2.5) |
+
+| Level | 2 | 3 | 4 | 5 | 6 | 7 | 8 |
+|-------|---|---|---|---|---|---|---|
+| Total XP | 100 | 230 | 400 | 600 | 800 | 1050 | 1350 |
+
+Each level-up adds +1 to the class's primary stat (and +1 to its secondary stat on even levels), raises max HP (Warrior +8, Cleric +7, Rogue +6, Bard +6, Wizard +5) and max mana (Wizard +8, Cleric +7, Bard +7, Rogue +5, Warrior +3), and restores 30% of both. Sessions saved under the old XP curve are moved onto this one when they load.
+
+Enemy strength follows the story rather than the player's level: the tier rises from 1 to 2 (Short), 3 (Standard) or 4 (Grand Saga) as the campaign progresses, the final fight is always the boss, hinted beats are elite, and everything else (including surprise fights) is standard. A Short campaign ends around level 3, a Standard one around level 4 and a Grand Saga around level 6.
 
 ---
 
@@ -365,6 +424,9 @@ All status effects are governed by a unified registry (`STATUS_EFFECT_RULES`) th
 | 🔥 Burning | DoT: 1–3 damage/turn | 2–3 turns |
 | 🛡️ Blocking | +3 armor | 1 turn |
 | 💨 Dodging | 50% chance to avoid attack | 1 turn |
+| 💢 Empowered | Outgoing damage ×1.5 (enemy rage, frenzy, a boss's second phase) | 2 turns |
+
+Older effect names used by early enemy templates and saved fights (`bleeding`, `stunned`, `weakened`, `frightened`, `blessed`) map onto the current ones, and every enemy ability carries a `target` (`player`, or `self` for buffs). Constructs are immune to bleed and poison; the undead are immune to poison. A stun on the player now costs them their next turn.
 
 ### 6-Phase Turn Structure
 
@@ -382,8 +444,27 @@ Every combat turn follows this order:
 - **Duration cap**: Each effect has a max duration (prevents infinite effects)
 - **Registry-driven**: Both backend and frontend use identical rule tables
 
+### Enemy Behavior
+
+Each enemy plans its next move one turn ahead, shown on its card as **Next: …** (⚠ marks a big hit). It may change that plan in reaction to what the player just did, and the card updates before it acts (`frontend/src/utils/enemyAI.js`):
+
+| Type | Behavior |
+|------|----------|
+| 👹 Brute | Winds up a ×1.75 blow every third turn. A stun cancels it; blocking or dodging halves it. |
+| 🛡️ Soldier | Steady, precise attacks. Answers a player buff by weakening them; raises a guard when hurt. |
+| 🗡️ Skirmisher | A flurry of two quick hits (60% each) and bleeding cuts. |
+| 🐺 Beast | Pounces to stun (never twice in a row); frenzies once below half HP. |
+| 🔮 Caster | Hexes (weaken, no damage) and blasts; once at ≤40% HP it shields itself, or heals if desperate. |
+| 🤖 Construct | Charges up, then an overcharged ×2 strike. A stun drains the charge. |
+| 💀 Undead | Drains life, healing half the damage it deals. |
+| 👁️ Horror | Dread (weaken) and rend (bleed). |
+
+Elites rally once at half HP (heal 20% and gain focus). Bosses hold their finisher back until half HP, then enter a second phase: a taunt, empowered for two turns, and the finisher every third turn. The server-side `CombatEngine` keeps its simpler AI; it isn't used in live play.
+
 ### Narration
 Status effects are described narratively — never mechanically. "Blood trickles from the wound, refusing to clot" instead of "bleed for 3 turns (-2 HP/tick)".
+
+The fight log reads like the story: a line that depends on the weapon, the enemy's type and the setting, followed by small numbers, e.g. "Sparks burst from the drone's chassis (−7)". A fight opens with the scene that led to it, the enemy's description and its taunt; enemies react again at half HP and when they fall, and no line repeats back to back. Only the story lines are sent to the server for the post-fight narration.
 
 ## Probability System
 

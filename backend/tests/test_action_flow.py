@@ -1,7 +1,7 @@
 """Bug 1 regressions: rolled actions complete and mana is deducted exactly once."""
 
 import main
-from helpers import act, create_session, get_session, make_intent
+from helpers import act, create_session, get_session, make_intent, win_fight
 
 COST = 10
 
@@ -143,10 +143,10 @@ def test_history_returns_each_turn(client, app_state, fixed_roll):
 
 
 def test_repeated_actions_do_not_get_easier(client, app_state, fixed_roll):
-    # Keep failing (roll 1) and use a non-hostile action type so neither the story
-    # beat nor combat tension advances into combat during the repetition.
+    # Keep failing (roll 1) with a non-hostile action type so tension doesn't start
+    # surprise fights. The turn budget still forces beats on, so planned fights are won.
     fixed_roll(1)
-    # The description avoids words shared with beat text, which would advance the beat.
+    # The description avoids words shared with beat text (no narrative-alignment bonus).
     app_state.intent_parser.next_intent = _rolled_intent(action_type="investigate", description="inspect stonework")
     session_id, headers = create_session(client)
 
@@ -154,7 +154,10 @@ def test_repeated_actions_do_not_get_easier(client, app_state, fixed_roll):
     for _ in range(5):
         response = act(client, session_id, headers, "I search the wall")
         assert response.status_code == 200, response.text
-        probabilities.append(response.json()["probability"])
+        body = response.json()
+        probabilities.append(body["probability"])
+        if body["combat_started"]:  # the turn budget brings planned fights in; get past them
+            assert win_fight(client, session_id, headers, body["combat_data"]).status_code == 200
 
     assert probabilities[-1] <= probabilities[0] + 0.05
 

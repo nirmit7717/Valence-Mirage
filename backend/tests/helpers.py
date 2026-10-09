@@ -54,11 +54,17 @@ class FakeNarrator:
 
     def __init__(self):
         self.text = DEFAULT_NARRATION
+        self.epilogue_text = "The last foe falls. Peace settles over the land, and the tale is told for years."
         self.calls: list[dict] = []
+        self.epilogue_calls: list[dict] = []
 
     async def narrate(self, **kwargs) -> str:
         self.calls.append(kwargs)
         return self.text
+
+    async def narrate_epilogue(self, **kwargs) -> str:
+        self.epilogue_calls.append(kwargs)
+        return self.epilogue_text
 
     async def narrate_opening(self, **kwargs) -> str:
         return DEFAULT_NARRATION
@@ -99,7 +105,8 @@ def make_planner() -> CampaignPlanner:
     planner = CampaignPlanner()
 
     async def fake_generate_blueprint(player_name="Adventurer", keywords="", template=None, beat_weights=None):
-        return CampaignPlanner._fallback_blueprint(player_name)
+        # Same structure guarantee as the real planner: shaped like the requested template.
+        return CampaignPlanner._fallback_blueprint(player_name, template)
 
     planner.generate_blueprint = fake_generate_blueprint
     return planner
@@ -136,3 +143,89 @@ def get_session(session_id: str):
 
 def act(client, session_id: str, headers: dict, action: str = "I look around"):
     return client.post(f"/session/{session_id}/action", json={"action": action}, headers=headers)
+
+
+# ─── Campaign structure helpers ───
+
+
+def campaign_beats(session_id: str) -> list[tuple[int, dict]]:
+    """All beats of the session's campaign in story order, as (act_id, beat_dict)."""
+    campaign = get_session(session_id).world_state["campaign"]
+    acts = sorted(campaign["acts"], key=lambda a: a["act_id"])
+    return [(act["act_id"], beat) for act in acts for beat in act["beats"]]
+
+
+def move_to_beat(session_id: str, index: int) -> dict:
+    """Jump the campaign to the beat at ``index`` in story order (negative = from the end)."""
+    act_id, beat = campaign_beats(session_id)[index]
+    world = get_session(session_id).world_state
+    world["campaign"]["current_act"] = act_id
+    world["campaign"]["current_beat"] = beat["beat_id"]
+    world["turns_in_beat"] = 0
+    return beat
+
+
+def move_to_first_beat_of_type(session_id: str, beat_type: str) -> dict:
+    index = next(i for i, (_, beat) in enumerate(campaign_beats(session_id)) if beat["type"] == beat_type)
+    return move_to_beat(session_id, index)
+
+
+def use_legacy_campaign(session_id: str) -> None:
+    """Swap in the pre-template 9-beat campaign (sessions saved before turn budgets existed).
+
+    Its last beat is a non-combat "climax", so a story action can end the campaign.
+    """
+    legacy = CampaignPlanner._fallback_blueprint("Tester").model_dump()
+    for act in legacy["acts"]:
+        for beat in act["beats"]:
+            beat.pop("min_turns", None)
+            beat.pop("max_turns", None)
+            beat.pop("threat_hint", None)
+    world = get_session(session_id).world_state
+    world["campaign"] = legacy
+    world["campaign_template"] = {}
+    world["turns_in_beat"] = 0
+
+
+def win_fight(client, session_id: str, headers: dict, combat_data: dict, turns_taken: int = 30, **overrides):
+    """Resolve the active fight as a valid victory."""
+    return resolve_fight(client, session_id, headers, combat_data, turns_taken=turns_taken, **overrides)
+
+
+def lose_fight(client, session_id: str, headers: dict, combat_data: dict, turns_taken: int = 3):
+    """Resolve the active fight as a defeat (player at 0 HP)."""
+    return resolve_fight(client, session_id, headers, combat_data, turns_taken=turns_taken,
+                         result="defeat", player_hp=0)
+
+
+def resolve_fight(client, session_id: str, headers: dict, combat_data: dict, turns_taken: int = 30, **overrides):
+    """POST /combat/resolve for the active fight; defaults describe a valid victory."""
+    body = {
+        "combat_id": combat_data["combat_id"],
+        "result": "victory",
+        "player_hp": combat_data["player"]["hp"],
+        "player_mana": combat_data["player"]["mana"],
+        "enemy_name": combat_data["enemy"]["name"],
+        "items_used": [],
+        "combat_log": [],
+        "turns_taken": turns_taken,
+    }
+    body.update(overrides)
+    return client.post(f"/session/{session_id}/combat/resolve", headers=headers, json=body)
+
+
+GOBLIN_SCENE = "A goblin scavenger lunges from the shadows, blade raised."
+
+
+def start_planned_fight(client, app_state, narration: str = GOBLIN_SCENE, **session_body):
+    """New session moved to its first planned fight; one action starts it.
+
+    Returns (session_id, headers, combat_data).
+    """
+    app_state.intent_parser.next_intent = make_intent(description="inspect stonework")
+    app_state.narrator.text = narration
+    session_id, headers = create_session(client, **session_body)
+    move_to_first_beat_of_type(session_id, "combat")
+    body = act(client, session_id, headers).json()
+    assert body["combat_started"] is True, body
+    return session_id, headers, body["combat_data"]

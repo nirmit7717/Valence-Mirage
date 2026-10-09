@@ -42,7 +42,7 @@ ENEMY_TEMPLATES = {
     "corrupted_wolf": EnemyTemplate(
         name="Corrupted Wolf", tier=2, hp=22, armor=1, attack_bonus=3.0,
         damage_dice="2d4+2", xp_reward=35,
-        abilities=[{"name": "Savage Bite", "damage_dice": "2d6+3", "status_effect": "bleeding", "status_duration": 2}],
+        abilities=[{"name": "Savage Bite", "damage_dice": "2d6+3", "status_effect": "bleed", "status_duration": 2}],
         loot_table=[
             {"name": "Wolf Pelt", "type": "misc", "chance": 0.6},
         ],
@@ -61,7 +61,7 @@ ENEMY_TEMPLATES = {
         name="Dark Knight", tier=3, hp=40, armor=5, attack_bonus=3.0,
         damage_dice="1d12+3", xp_reward=70,
         abilities=[
-            {"name": "Shield Slam", "damage_dice": "1d8+2", "status_effect": "stunned", "status_duration": 1},
+            {"name": "Shield Slam", "damage_dice": "1d8+2", "status_effect": "stun", "status_duration": 1},
             {"name": "Dark Slash", "damage_dice": "2d8+4"},
         ],
         loot_table=[
@@ -75,7 +75,7 @@ ENEMY_TEMPLATES = {
         damage_dice="2d8+3", xp_reward=75,
         abilities=[
             {"name": "Shadow Bolt", "damage_dice": "2d10+3"},
-            {"name": "Curse", "status_effect": "weakened", "status_duration": 2, "stat_modifier": {"strength": -3}},
+            {"name": "Curse", "status_effect": "weaken", "status_duration": 2, "stat_modifier": {"strength": -3}},
         ],
         loot_table=[
             {"name": "Shadow Essence", "type": "misc", "chance": 0.5},
@@ -85,7 +85,7 @@ ENEMY_TEMPLATES = {
     "crypt_horror": EnemyTemplate(
         name="Crypt Horror", tier=3, hp=45, armor=3, attack_bonus=2.5,
         damage_dice="2d6+4", xp_reward=65,
-        abilities=[{"name": "Terrifying Howl", "status_effect": "frightened", "status_duration": 2, "stat_modifier": {"dexterity": -2}}],
+        abilities=[{"name": "Terrifying Howl", "status_effect": "weaken", "status_duration": 2, "stat_modifier": {"dexterity": -2}}],
         loot_table=[
             {"name": "Ancient Relic", "type": "misc", "chance": 0.4},
             {"name": "Enchanted Ring", "type": "armor", "chance": 0.2, "stat_bonus": {"charisma": 2}},
@@ -98,7 +98,7 @@ ENEMY_TEMPLATES = {
         damage_dice="2d10+5", xp_reward=120,
         abilities=[
             {"name": "Fire Breath", "damage_dice": "3d8+5", "status_effect": "burning", "status_duration": 2},
-            {"name": "Tail Swipe", "damage_dice": "2d8+3", "status_effect": "stunned", "status_duration": 1},
+            {"name": "Tail Swipe", "damage_dice": "2d8+3", "status_effect": "stun", "status_duration": 1},
         ],
         loot_table=[
             {"name": "Dragon Scale", "type": "armor", "chance": 0.4, "armor_bonus": 4},
@@ -111,7 +111,7 @@ ENEMY_TEMPLATES = {
         damage_dice="2d8+4", xp_reward=130,
         abilities=[
             {"name": "Life Drain", "damage_dice": "2d8+3", "heal_self": True},
-            {"name": "Blood Frenzy", "status_effect": "blessed", "status_duration": 3, "stat_modifier": {"strength": 4}},
+            {"name": "Blood Frenzy", "status_effect": "empowered", "status_duration": 2, "target": "self"},
         ],
         loot_table=[
             {"name": "Vampire Cape", "type": "armor", "chance": 0.3, "armor_bonus": 3},
@@ -123,7 +123,7 @@ ENEMY_TEMPLATES = {
         damage_dice="2d10+4", xp_reward=125,
         abilities=[
             {"name": "Hellfire", "damage_dice": "3d8+6", "status_effect": "burning", "status_duration": 2},
-            {"name": "Demonic Roar", "status_effect": "frightened", "status_duration": 2, "stat_modifier": {"strength": -2, "dexterity": -2}},
+            {"name": "Demonic Roar", "status_effect": "weaken", "status_duration": 2, "stat_modifier": {"strength": -2, "dexterity": -2}},
         ],
         loot_table=[
             {"name": "Demon Horn", "type": "weapon", "chance": 0.3, "damage_bonus": 5},
@@ -138,8 +138,8 @@ ENEMY_TEMPLATES = {
         abilities=[
             {"name": "Inferno Breath", "damage_dice": "4d10+8", "status_effect": "burning", "status_duration": 3},
             {"name": "Crushing Bite", "damage_dice": "3d12+6"},
-            {"name": "Wing Buffet", "damage_dice": "2d10+4", "status_effect": "stunned", "status_duration": 1},
-            {"name": "Ancient Rage", "status_effect": "blessed", "status_duration": 3, "stat_modifier": {"strength": 6}},
+            {"name": "Wing Buffet", "damage_dice": "2d10+4", "status_effect": "stun", "status_duration": 1},
+            {"name": "Ancient Rage", "status_effect": "empowered", "status_duration": 2, "target": "self"},
         ],
         loot_table=[
             {"name": "Dragon Heart", "type": "misc", "chance": 0.8},
@@ -168,7 +168,7 @@ ENEMY_TEMPLATES = {
         abilities=[
             {"name": "Apocalypse Strike", "damage_dice": "4d12+8"},
             {"name": "Hellstorm", "damage_dice": "3d10+5", "status_effect": "burning", "status_duration": 2},
-            {"name": "Corrupting Presence", "status_effect": "weakened", "status_duration": 3, "stat_modifier": {"strength": -3, "intelligence": -3}},
+            {"name": "Corrupting Presence", "status_effect": "weaken", "status_duration": 2, "stat_modifier": {"strength": -3, "intelligence": -3}},
         ],
         loot_table=[
             {"name": "Demon Lord's Horn", "type": "weapon", "chance": 0.5, "damage_bonus": 8},

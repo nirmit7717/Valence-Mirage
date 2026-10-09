@@ -11,6 +11,7 @@ import CampaignEndOverlay from './components/CampaignEndOverlay';
 import DiceRoll from './components/DiceRoll';
 import SettingsPanel from './components/SettingsPanel';
 import StoryLog from './components/StoryLog';
+import LevelUpBanner from './components/LevelUpBanner';
 
 injectAmbienceCSS();
 
@@ -106,6 +107,7 @@ export default function GameApp({ campaignId }) {
       ) : (
         <>
           <FloatingHUD data={game.sidebar} />
+          <LevelUpBanner levelUps={game.levelUps} onDismiss={game.dismissLevelUp} />
           <div className="game-stage">
             {!game.combat && !game.narration && !game.diceResult && (
               <div className="stage-waiting">

@@ -11,6 +11,9 @@ function describeTurn(turn) {
   const outcome = turn.outcome && typeof turn.outcome === 'object' ? turn.outcome : {};
   const result = outcome.result || '';
   const roll = outcome.roll || turn.roll || 0;
+  const actionType = turn.intent?.action_type || '';
+  // A fight is recorded as its own turn: action_type "combat", result combat_victory / combat_defeat.
+  const fight = actionType === 'combat' || result === 'combat_victory' || result === 'combat_defeat';
   return {
     number: turn.turn_number,
     input: turn.player_input || '',
@@ -20,8 +23,13 @@ function describeTurn(turn) {
     threshold: outcome.threshold || 0,
     narration: stripChoices(outcome.narration || ''),
     success: result.includes('success'),
-    combat: (turn.intent?.action_type || '') === 'attack' || result === 'player_death',
+    fight,
+    combat: fight || actionType === 'attack' || result === 'player_death',
   };
+}
+
+function fightLabel(result) {
+  return result === 'combat_defeat' ? '⚔️ Fight lost' : '⚔️ Fight won';
 }
 
 function stripChoices(text) {
@@ -173,7 +181,11 @@ export default function CampaignDetailPage() {
                   <div className="timeline-content">
                     <div className="timeline-header">
                       <span className="timeline-turn">Turn {t.number || i + 1}</span>
-                      {t.rolled ? (
+                      {t.fight ? (
+                        <span className={`timeline-badge ${t.result === 'combat_victory' ? 'vm-badge-success' : ''}`}>
+                          {fightLabel(t.result)}
+                        </span>
+                      ) : t.rolled ? (
                         <span className={`timeline-badge ${t.success ? 'vm-badge-success' : ''}`}>
                           🎲 {t.roll} vs {t.threshold}+ → {resultLabel(t.result)}
                         </span>

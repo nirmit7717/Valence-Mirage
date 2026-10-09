@@ -5,7 +5,8 @@ import random
 import logging
 from models.combat import (
     CombatState, Combatant, CombatAction, CombatActionType,
-    CombatLogEntry, EnemyTemplate, StatusEffect, get_effect_rule,
+    CombatLogEntry, EnemyTemplate, StatusEffect, canonical_status, get_effect_rule,
+    normalize_enemy_ability,
 )
 from data.enemies import get_random_enemy, roll_damage, ENEMY_TEMPLATES
 from data.items import item_from_definition
@@ -212,34 +213,33 @@ class CombatEngine:
                              f"{enemy.name} is stunned and cannot act!")
 
         # Simple AI: use abilities if available and hp < 50%, else basic attack
-        action_name = "Attack"
-        damage_dice = ""
-        status_effect = None
-        status_duration = 0
+        abilities = [normalize_enemy_ability(a) for a in enemy.abilities]
+        chosen = None
 
-        if enemy.abilities and enemy.hp < enemy.max_hp * 0.5:
-            # Try to use a special ability
-            for abil in enemy.abilities:
-                if abil.get("status_effect") and not any(e.name == abil["status_effect"] for e in player.status_effects):
-                    action_name = abil["name"]
-                    damage_dice = abil.get("damage_dice", "")
-                    status_effect = abil.get("status_effect")
-                    status_duration = abil.get("status_duration", 1)
-                    break
-            else:
+        def _already_applied(abil: dict) -> bool:
+            holder = enemy if abil["target"] == "self" else player
+            return any(e.name == abil["status_effect"] for e in holder.status_effects)
+
+        if abilities and enemy.hp < enemy.max_hp * 0.5:
+            # Try a special ability whose effect isn't already in place
+            chosen = next((a for a in abilities if a.get("status_effect") and not _already_applied(a)), None)
+            if chosen is None:
                 # Use highest damage ability
-                best = max(enemy.abilities, key=lambda a: len(a.get("damage_dice", "")))
-                action_name = best["name"]
-                damage_dice = best.get("damage_dice", "")
-                status_effect = best.get("status_effect")
-                status_duration = best.get("status_duration", 1)
-        elif enemy.abilities and self.rng.random() < 0.3:
+                chosen = max(abilities, key=lambda a: len(a.get("damage_dice", "")))
+        elif abilities and self.rng.random() < 0.3:
             # 30% chance to use an ability
-            abil = self.rng.choice(enemy.abilities)
-            action_name = abil["name"]
-            damage_dice = abil.get("damage_dice", "")
-            status_effect = abil.get("status_effect")
-            status_duration = abil.get("status_duration", 1)
+            chosen = self.rng.choice(abilities)
+
+        action_name = chosen["name"] if chosen else "Attack"
+        damage_dice = (chosen or {}).get("damage_dice", "")
+        status_effect = (chosen or {}).get("status_effect")
+        status_duration = (chosen or {}).get("status_duration", 1)
+
+        # A self-buff (rage, frenzy, guard) needs no attack roll.
+        if chosen and chosen["target"] == "self" and status_effect:
+            self._apply_effect(enemy, status_effect, status_duration)
+            return self._log(combat, enemy.name, action_name, "buff", 0,
+                             f"{enemy.name} uses {action_name} and is {status_effect}!")
 
         # ── Phase 3: Roll to hit ──
         roll = self.rng.randint(1, 20)
@@ -266,6 +266,12 @@ class CombatEngine:
         if attack_total < threshold and not is_crit:
             return self._log(combat, enemy.name, action_name, "miss", 0,
                              f"{enemy.name}'s attack glances off your armor!")
+
+        # A status-only move (hex, curse, howl) lands its effect and deals no damage.
+        if status_effect and not damage_dice and chosen is not None:
+            self._apply_effect(player, status_effect, status_duration)
+            return self._log(combat, enemy.name, action_name, "debuff", 0,
+                             f"{enemy.name}'s {action_name} leaves you {status_effect}!")
 
         # ── Phase 4: Calculate damage ──
         damage = roll_damage(damage_dice, self.rng) if damage_dice else self.rng.randint(1, 6) + int(enemy.attack_bonus)
@@ -433,6 +439,7 @@ class CombatEngine:
 
     def _apply_effect(self, combatant: Combatant, effect_name: str, duration: int):
         """Apply a status effect with stacking rules."""
+        effect_name = canonical_status(effect_name)
         rule = get_effect_rule(effect_name)
         max_dur = rule.get("max_duration", 5)
         capped_duration = min(duration, max_dur)

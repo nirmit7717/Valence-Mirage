@@ -6,7 +6,7 @@ import re
 from pathlib import Path
 
 from openai import AsyncOpenAI
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 import config
 from engines.llm_utils import extract_message_text
@@ -15,14 +15,38 @@ logger = logging.getLogger(__name__)
 
 PROMPT_PATH = Path(__file__).parent.parent / "prompts" / "campaign_plan.txt"
 
+# Words too common to count as "the action relates to this beat".
+_STOP_WORDS = {
+    "the", "and", "for", "are", "but", "not", "you", "your", "all", "can", "her", "his", "was",
+    "one", "our", "out", "had", "has", "how", "its", "may", "new", "now", "old", "see", "way",
+    "who", "did", "get", "let", "say", "she", "too", "use", "from", "with", "this", "that",
+    "into", "over", "they", "them", "then", "than", "what", "when", "where", "which", "while",
+    "there", "their", "here", "have", "will", "would", "could", "should", "about", "after",
+    "before", "around", "through", "toward", "towards", "just", "some", "more", "most", "very",
+    "also", "only", "each", "other", "such", "like", "make", "take", "look", "find",
+}
+
 
 class StoryBeat(BaseModel):
     beat_id: int
     title: str
-    description: str = ""  
+    description: str = ""
     type: str = "exploration"
     key_npcs: list[str] = []
     probability_modifier: float = 0.0
+    # Turn budget for this beat (0 = default by type; sessions saved before budgets existed).
+    min_turns: int = 0
+    max_turns: int = 0
+    threat_hint: str | None = None  # "elite" | "boss" for escalating fights
+
+    @model_validator(mode="after")
+    def _default_budget(self):
+        if self.type == "combat":
+            self.min_turns, self.max_turns = 2, 2
+        else:
+            self.min_turns = self.min_turns or 1
+            self.max_turns = max(self.max_turns or 2, self.min_turns)
+        return self
 
 
 class CampaignAct(BaseModel):
@@ -69,11 +93,17 @@ class CampaignPlanner:
         # Add template structure to prompt
         if template:
             template_desc = f"\nCAMPAIGN STRUCTURE (you must follow this exactly):\n"
-            template_desc += f"Total beats: {template.total_beats}, Est. turns: {template.estimated_turns}\n"
+            template_desc += (
+                f"Total beats: {template.total_beats} ({template.fight_count} of them fights), "
+                f"campaign length: {template.estimated_turns} turns\n"
+            )
             for act in template.acts:
                 template_desc += f"\nAct {act.act_id}: {act.title} — {act.description}\n"
                 for beat in act.beats:
-                    template_desc += f"  Beat {beat.beat_id}: type={beat.beat_type}, enforcement={beat.enforcement} — {beat.description}\n"
+                    escalation = f", threat={beat.threat_hint}" if beat.threat_hint else ""
+                    template_desc += (
+                        f"  Beat {beat.beat_id}: type={beat.beat_type}{escalation} — {beat.description}\n"
+                    )
             user_msg += template_desc
             # Adaptive beat weighting from player profile
             if beat_weights:
@@ -108,19 +138,26 @@ class CampaignPlanner:
             raw = extract_message_text(response)
             logger.info(f"Campaign blueprint raw: {raw[:200]}...")
 
+            blueprint = None
             if not raw:
                 logger.warning("Campaign blueprint response contained no text content; using fallback blueprint")
-                return self._fallback_blueprint(player_name)
-
-            data = self._parse_json_robust(raw)
-            if data:
-                return CampaignBlueprint(**data)
-            logger.warning("Could not parse campaign JSON, using fallback")
-            return self._fallback_blueprint(player_name)
-
+            else:
+                data = self._parse_json_robust(raw)
+                if data:
+                    try:
+                        blueprint = CampaignBlueprint(**data)
+                    except Exception as e:
+                        logger.warning(f"Campaign JSON didn't match the blueprint model: {e}")
+                else:
+                    logger.warning("Could not parse campaign JSON, using fallback")
         except Exception as e:
             logger.warning(f"Campaign blueprint generation failed: {e}")
-            return self._fallback_blueprint(player_name)
+            blueprint = None
+
+        if blueprint is None:
+            return self._fallback_blueprint(player_name, template)
+        # The model's creative content is kept, but the structure always comes from the template.
+        return conform_to_template(blueprint, template) if template else blueprint
 
     def _parse_json_robust(self, raw: str) -> dict | None:
         """Try multiple strategies to parse potentially truncated JSON."""
@@ -210,14 +247,16 @@ class CampaignPlanner:
         return blueprint
 
     def get_narrative_relevance_bonus(self, blueprint: CampaignBlueprint, action_description: str) -> float:
+        """Small bonus when the action shares meaningful words with the current beat.
+
+        Only words of 4+ letters that aren't stop words count, so "the" or "a"
+        no longer make every action look on-topic.
+        """
         beat = self.get_current_beat(blueprint)
         if not beat:
             return 0.0
 
-        beat_words = set(beat.title.lower().split() + beat.description.lower().split())
-        action_words = set(action_description.lower().split())
-        overlap = len(beat_words & action_words)
-
+        overlap = len(_meaningful_words(f"{beat.title} {beat.description}") & _meaningful_words(action_description))
         if overlap >= 3:
             return 0.2
         elif overlap >= 1:
@@ -225,7 +264,10 @@ class CampaignPlanner:
         return 0.0
 
     @staticmethod
-    def _fallback_blueprint(player_name: str) -> CampaignBlueprint:
+    def _fallback_blueprint(player_name: str, template=None) -> CampaignBlueprint:
+        """Built-in campaign used when the model fails. Shaped like ``template`` when given."""
+        if template is not None:
+            return _themed_fallback(template)
         return CampaignBlueprint(
             title="The Dark Tower",
             premise="A mysterious tower has appeared in the northern mountains. "
@@ -269,3 +311,139 @@ class CampaignPlanner:
                 "Seal the tower at great personal cost",
             ],
         )
+
+
+# ─── Template conformance ───
+
+_FINAL_FIGHT_NOTE = "This is the final confrontation with the campaign's central threat."
+
+
+def _meaningful_words(text: str) -> set[str]:
+    words = re.findall(r"[a-z']+", (text or "").lower())
+    return {w for w in words if len(w) >= 4 and w not in _STOP_WORDS}
+
+
+def _title_from_description(description: str) -> str:
+    """'Opening hook — introduce the threat' -> 'Opening Hook'."""
+    head = re.split(r"\s+[—–-]\s+", description or "", maxsplit=1)[0].strip() or "Chapter"
+    return " ".join(word[:1].upper() + word[1:] for word in head.split())
+
+
+def conform_to_template(blueprint: CampaignBlueprint, template) -> CampaignBlueprint:
+    """Return a blueprint with exactly the template's acts, beats, types and turn budgets.
+
+    The model's creative content (titles, descriptions, NPCs) is kept where a beat
+    of the same type exists: positionally first, otherwise the next unused beat of
+    that type. Beats with no match get the template's own description.
+    """
+    source_acts = sorted(blueprint.acts, key=lambda a: a.act_id)
+    source = [beat for act in source_acts for beat in act.beats]
+    used: set[int] = set()
+
+    acts: list[CampaignAct] = []
+    position = 0
+    for act_index, template_act in enumerate(template.acts):
+        source_act = source_acts[act_index] if act_index < len(source_acts) else None
+        beats: list[StoryBeat] = []
+        for template_beat in template_act.beats:
+            match = None
+            if position < len(source) and position not in used and source[position].type == template_beat.beat_type:
+                match = position
+            else:
+                match = next((i for i, b in enumerate(source) if i not in used and b.type == template_beat.beat_type), None)
+            position += 1
+
+            original = source[match] if match is not None else None
+            if match is not None:
+                used.add(match)
+            description = (original.description if original and original.description else template_beat.description)
+            if template_beat.threat_hint == "boss" and "final" not in description.lower():
+                description = f"{description.rstrip('. ')}. {_FINAL_FIGHT_NOTE}"
+            beats.append(StoryBeat(
+                beat_id=template_beat.beat_id,
+                title=(original.title if original and original.title else _title_from_description(template_beat.description)),
+                description=description,
+                type=template_beat.beat_type,
+                key_npcs=original.key_npcs if original else [],
+                probability_modifier=original.probability_modifier if original else 0.0,
+                min_turns=template_beat.min_turns,
+                max_turns=template_beat.max_turns,
+                threat_hint=template_beat.threat_hint,
+            ))
+        acts.append(CampaignAct(
+            act_id=template_act.act_id,
+            title=(source_act.title if source_act and source_act.title else template_act.title),
+            description=(source_act.description if source_act and source_act.description else template_act.description),
+            beats=beats,
+        ))
+
+    if len(source) != len(template.beats) or len(used) != len(source):
+        logger.info(f"Blueprint conformed to the {template.size} template "
+                    f"({len(source)} model beats -> {len(template.beats)}, {len(used)} reused)")
+
+    return CampaignBlueprint(
+        title=blueprint.title,
+        premise=blueprint.premise,
+        setting=blueprint.setting,
+        tone=blueprint.tone,
+        acts=acts,
+        current_act=acts[0].act_id,
+        current_beat=acts[0].beats[0].beat_id,
+        key_themes=blueprint.key_themes,
+        possible_endings=blueprint.possible_endings,
+    )
+
+
+# Content for the built-in campaign, picked by beat type so any template can use it.
+_FALLBACK_BEATS = {
+    "narrative_choice": [
+        ("The Barkeep's Warning", "Learn about the dark tower and the disappearances from the barkeep"),
+        ("The Truth Revealed", "Discover the tower's master is someone the region once trusted"),
+    ],
+    "exploration": [
+        ("The Abandoned Village", "Search the emptied village for signs of what took its people"),
+        ("Secrets of the Tower", "Find the hidden path and the tower's weakness"),
+    ],
+    "social": [
+        ("The Hooded Stranger", "A mysterious figure offers help — at a price"),
+        ("The Old Hermit", "A hermit who once served the tower shares what he knows"),
+    ],
+    "choice": [
+        ("The Decision", "Choose how to approach the tower and who to trust"),
+        ("The Crossroads", "Save the captured villagers or press on toward the tower"),
+    ],
+    "combat": [
+        ("Ambush on the Road", "The tower's raiders strike on the road north"),
+        ("The Tower's Hounds", "Creatures from the tower hunt the player through the hills"),
+        ("Night Raid", "The raiders attack the camp under cover of darkness"),
+        ("The Traitor's Blade", "A trusted ally reveals their loyalty to the tower"),
+        ("The Gatekeeper", "The tower's guardian bars the entrance"),
+    ],
+}
+_FALLBACK_ELITE = ("The Tower's Champion", "The master's sworn champion makes a last stand on the stairs")
+_FALLBACK_BOSS = ("The Master of the Tower", "Face the tower's master and end the darkness over the region")
+
+
+def _themed_fallback(template) -> CampaignBlueprint:
+    """The built-in Dark Tower campaign, shaped exactly like ``template``."""
+    counters: dict[str, int] = {}
+    beats_by_act: list[CampaignAct] = []
+    for template_act in template.acts:
+        beats = []
+        for template_beat in template_act.beats:
+            if template_beat.threat_hint == "boss":
+                title, description = _FALLBACK_BOSS
+            elif template_beat.threat_hint == "elite":
+                title, description = _FALLBACK_ELITE
+            else:
+                pool = _FALLBACK_BEATS.get(template_beat.beat_type) or [(_title_from_description(template_beat.description), template_beat.description)]
+                index = counters.get(template_beat.beat_type, 0)
+                counters[template_beat.beat_type] = index + 1
+                title, description = pool[index % len(pool)]
+            beats.append(StoryBeat(beat_id=template_beat.beat_id, title=title, description=description,
+                                   type=template_beat.beat_type))
+        beats_by_act.append(CampaignAct(act_id=template_act.act_id, title=template_act.title,
+                                        description=template_act.description, beats=beats))
+    legacy = CampaignPlanner._fallback_blueprint("Adventurer")
+    themed = legacy.model_copy(update={"acts": beats_by_act})
+    return conform_to_template(themed, template)
